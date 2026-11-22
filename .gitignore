@@ -1,0 +1,22 @@
+# Downloaded BEA/EIA source files and generated tables are reproducible; keep them out of git
+data/raw/*
+data/output/*
+!data/raw/.gitkeep
+!data/output/.gitkeep
+
+# API keys and local config
+.env
+*.local.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
