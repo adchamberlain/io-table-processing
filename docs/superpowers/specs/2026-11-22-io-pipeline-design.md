@@ -187,13 +187,17 @@ result = model.run(shocks.carbon_price(dollars_per_ton_co2=50, emissions_year=20
 2017 benchmark, 402 industries, static URLs verified 2026-11-22 (no key):
 
 ```
-https://apps.bea.gov/industry/xls/io-annual/IOMake_After_Redefinitions_DET.xlsx
-https://apps.bea.gov/industry/xls/io-annual/IOUse_After_Redefinitions_PRO_DET.xlsx
-https://apps.bea.gov/industry/xls/io-annual/IOMake_Before_Redefinitions_DET.xlsx
-https://apps.bea.gov/industry/xls/io-annual/IOUse_Before_Redefinitions_PRO_DET.xlsx
+https://apps.bea.gov/industry/xls/io-annual/IOMake_After_Redefinitions_2017_Detail.xlsx
+https://apps.bea.gov/industry/xls/io-annual/IOUse_After_Redefinitions_PRO_2017_Detail.xlsx
+https://apps.bea.gov/industry/xls/io-annual/IOMake_Before_Redefinitions_2017_Detail.xlsx
+https://apps.bea.gov/industry/xls/io-annual/IOUse_Before_Redefinitions_PRO_2017_Detail.xlsx
 https://apps.bea.gov/industry/xls/io-annual/IxI_TR_2017_PRO_DET.xlsx          (validation)
 https://apps.bea.gov/industry/xls/underlying-estimates/PCEBridge_2017_DET.xlsx
 ```
+
+(Corrected 2026-11-22 during implementation: the shorter `..._DET.xlsx` make/use
+names also resolve, but serve a 2021-vintage workbook holding only the 2007 and
+2012 benchmarks. The `_2017_Detail.xlsx` files, dated May 2024, hold 2017.)
 
 Workbook layout (all of the above): sheets `NAICS Codes`, `2007`, `2012`, `2017`.
 In a year sheet: rows 1-3 title/units/source, row 5 descriptions, row 6 codes, data
@@ -202,9 +206,12 @@ always coerce to stripped str. Parsing locates the header by content (the cell
 reading "Code" in column A with "Industry Description"/"Commodity Description" in
 column B), never by fixed offsets, and stops at the first all-empty row.
 
-Make (2017): 402 industry rows + T007 total row; 401 commodity columns + S00401,
-S00402, S00300, S00900 + T008. Use (2017): 405 commodity rows + T005, V00100,
-V00200, V00300, T006, T008; 402 industry columns + T001 + 20 final-demand columns
+Make (2017): 402 industry rows + T007 total row; 402 commodity columns (398
+ordinary + S00401, S00402, S00300, S00900) + T008. Four industry codes have no
+commodity of their own (331314, S00101, S00201, S00202), so the commodity and
+industry sets differ and the make table is 402 x 402 only by coincidence. Use
+(2017): the same 402 commodity rows + T005, V00100, V00200, V00300, T006, T008;
+402 industry columns + T001 + 20 final-demand columns
 (F01000, F02E00, F02N00, F02R00, F02S00, F03000, F04000, F05000, F06C00, F06E00,
 F06N00, F06S00, F07C00, F07E00, F07N00, F07S00, F10C00, F10E00, F10N00, F10S00)
 + "Total Final Uses (GDP)" + "Total Commodity Output" (last two have no code).
