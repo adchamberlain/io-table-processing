@@ -591,7 +591,7 @@ def test_bea_mode_reproduces_bea_industry_by_industry_requirements(redefinitions
     if redefinitions == "after":          # the documented default must match; 'before' is reported only
         assert diff.values.max() < 1e-3
 ```
-If the `after` run fails the 1e-3 bound, do not loosen it: print the worst cells, try `before`, and if that one matches, switch the documented default in the spec and DEVLOG and make the assertion follow the matching one. If neither matches, stop and investigate with superpowers:systematic-debugging (candidates: BEA computing W at a different aggregation, treatment of S00402/S00900, government industries).
+If the `after` run fails the 1e-3 bound, do not loosen it: print the worst cells, try `before`, and if that one matches, switch the documented default in the spec and the private working log and make the assertion follow the matching one. If neither matches, stop and investigate with superpowers:systematic-debugging (candidates: BEA computing W at a different aggregation, treatment of S00402/S00900, government industries).
 
 - [ ] **Step 2: Run to verify failure.** - [ ] **Step 3: Implement `cli.py` (`build`, `check`) and `validate.ixi_total_requirements`.**
 - [ ] **Step 4: Run** — `pytest tests/test_cli.py tests/test_bea_ixi.py -v -s` → PASS; copy the printed max/mean diffs into the private working log.
@@ -816,7 +816,7 @@ def test_eia_download_has_recent_year():
 - [ ] **Step 2–4: fail → implement → pass.**
 - [ ] **Step 5: Commit** — `git add src/iotables/shocks.py tests/fixtures/eia_t11_01_sample.csv tests/test_shocks.py && git commit -m "feat: carbon-price preset from EIA CO2 by fuel"`
 
-### Task 14: CLI `run`, end-to-end on 2017, README, DEVLOG
+### Task 14: CLI `run`, end-to-end on 2017, README, the private working log
 
 **Files:**
 - Modify: `src/iotables/cli.py`, `src/iotables/__init__.py` (export `PriceModel, PriceResult, load_pce_bridge, shocks`), `README.md` (plus the private working log, not in the repository)
