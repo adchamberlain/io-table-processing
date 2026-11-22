@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A pip-installable package `iotables` that downloads BEA's 2017 benchmark make and use tables, builds a balanced square industry-by-industry table, and runs a general tax/cost pass-through price model down to PCE categories, validated against Andrew's 2002 tables, the WP6 price impacts, and BEA's own 2017 requirements table.
+**Goal:** A pip-installable package `iotables` that downloads BEA's 2017 benchmark make and use tables, builds a balanced square industry-by-industry table, and runs a general tax/cost pass-through price model down to PCE categories, validated against the 2002 tables, the WP6 price impacts, and BEA's own 2017 requirements table.
 
 **Architecture:** Four pure stages with plain pandas/dataclass objects between them: `download` (cached fetch with provenance) → `parse` (BEA xlsx → code-indexed `MakeTable`/`UseTable`) → `square` (`SquareIOTable` via the fixed-product-sales-structure transformation, three scrap modes) → `leontief` (`PriceModel` consuming `shocks` and a `PCEBridge`). A thin argparse CLI wraps them. Tests are the spec's validation targets.
 
@@ -55,12 +55,12 @@ Failure modes the spec implies but no happy-path test exercises; each has a test
 
 - [ ] **Step 1: Install the package in editable mode and commit the scaffold**
 
-Run: `cd /Users/andrewchamberlain/github/io-table-processing && pip install -e ".[dev]" && pytest -q`
+Run: `pip install -e ".[dev]" && pytest -q` (from the repository root)
 Expected: `1 passed`.
 
 ```bash
 git add -A
-git commit -m "chore: scaffold iotables package, archive earlier attempt, add design doc and dev log"
+git commit -m "chore: scaffold iotables package, add design doc and dev log"
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -498,7 +498,7 @@ def test_to_csv_writes_all_parts(tmp_path, toy_make, toy_use):
 - [ ] **Step 2–4: fail → implement → pass.**
 - [ ] **Step 5: Commit** — `git commit -am "feat: legacy-layout frame, Excel and CSV writers"`
 
-### Task 8: 2002 regression fixtures and tests (Andrew's summary and detailed tables)
+### Task 8: 2002 regression fixtures and tests (the 2002 summary and detailed tables)
 
 **Files:**
 - Create: `scripts/extract_2002_fixtures.py` (one-time; documented at top; run with a scratch venv that has `xlrd`, never from the package)
@@ -549,9 +549,9 @@ def test_rebuild_2002_detailed_table_matches_legacy():
 ```
 
 - [ ] **Step 2: Run to verify they skip/fail** — `pytest tests/test_regression_2002.py -v` → SKIP (no fixtures).
-- [ ] **Step 3: Write and run `scripts/extract_2002_fixtures.py`** with the scratch venv (`/private/tmp/claude-501/.../scratchpad/venv/bin/python`, has xlrd) — it reads the Dropbox paths above and writes the fixtures. Verify: `summary_make.csv` has 133 rows × 135 columns (134 commodities + T008) plus the `T007` row; `detail_use.csv.gz` has 431 rows × 439 columns.
+- [ ] **Step 3: Write and run `scripts/extract_2002_fixtures.py`** with a scratch virtual environment that has xlrd — it reads the original 2002 workbooks (held privately) and writes the fixtures. Verify: `summary_make.csv` has 133 rows × 135 columns (134 commodities + T008) plus the `T007` row; `detail_use.csv.gz` has 431 rows × 439 columns.
 - [ ] **Step 4: Run the regression tests** — `pytest tests/test_regression_2002.py -v` → PASS. If the summary test fails only in `V00300`/`T008`, check that `g` came from the use `T008` row; if the detailed test fails in a handful of cells, print `bad` and inspect whether the legacy sheet had a manual override before changing anything (do not loosen tolerances).
-- [ ] **Step 5: Commit** — `git add scripts tests/fixtures/2002 tests/test_regression_2002.py tests/conftest.py && git commit -m "test: rebuild Andrew's 2002 summary and detailed tables cell for cell"`
+- [ ] **Step 5: Commit** — `git add scripts tests/fixtures/2002 tests/test_regression_2002.py tests/conftest.py && git commit -m "test: rebuild the 2002 summary and detailed tables cell for cell"`
 
 ### Task 9: CLI `build` and `check`, BEA industry-by-industry requirements comparison
 

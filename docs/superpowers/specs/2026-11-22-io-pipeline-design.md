@@ -1,10 +1,10 @@
 # Design: square U.S. input-output tables and a general price pass-through model
 
 Date: 2026-11-22
-Status: approved by Andrew, 2026-11-22
-Author: Claude, from conversation with Andrew Chamberlain
+Status: approved by the project owner, 2026-11-22
+Author: project design document, written with the project owner
 Supersedes: the spreadsheet workflow in `docs/reference/IO_Methodology.pdf` (2011) and
-`docs/reference/wp6.pdf` (2009), and the failed attempt in `archive/`.
+`docs/reference/wp6.pdf` (2009).
 
 ## 1. Intent
 
@@ -26,7 +26,7 @@ Goals
 - One command rebuilds everything from BEA source files: `iotables build`.
 - Output is a square n x n industry table that satisfies the accounting identities
   (row total = column total = industry output) to floating-point precision.
-- Exact replication of the legacy results as tests: Andrew's 2002 summary and detailed
+- Exact replication of the legacy results as tests: the 2002 summary and detailed
   tables, the WP6 price impacts, and BEA's own 2017 industry-by-industry requirements.
 - A general shock interface: tax on an industry, on a commodity, on a specific
   buyer-seller flow, or on a value-added component; dollars or ad valorem.
@@ -43,9 +43,9 @@ Non-goals (this round)
 - A GUI or web service.
 
 Anti-goals (would make this a failure even if it "works")
-- Hidden hard-coded row/column offsets or industry counts (the archive's failure mode).
+- Hidden hard-coded row/column offsets or industry counts (the failure mode of an earlier attempt).
 - Fuzzy name matching to align industries. Alignment is by BEA code, always.
-- Silent fallbacks that fabricate data (the archive had `np.random` as a fallback).
+- Silent fallbacks that fabricate data (an earlier attempt had `np.random` as a fallback).
 - Results that cannot be traced to a BEA file, a date, and a formula.
 
 ## 3. Constraints
@@ -60,7 +60,7 @@ Anti-goals (would make this a failure even if it "works")
 
 ## 4. Decisions already made
 
-By Andrew
+By the project owner
 - Stop at PCE categories; no CEX microdata.
 - The model is a general tax/cost pass-through model; carbon pricing is a preset.
 - Default pass-through formulation: the textbook Leontief price model where the tax
@@ -76,12 +76,12 @@ By Andrew
   Excel/CSV are exports.
 - Daily `DEVLOG.txt` entries.
 
-By Claude (flagged as calls; Andrew can override)
+Design calls (flagged; the project owner can override)
 - Package name `iotables`, src layout, CLI `iotables`.
 - Default input tables: BEA "after redefinitions" (BEA's 2002 "standard" tables were
   after redefinitions; the 2002 legacy work used them). Before/after is a parameter.
 - Scrap treatment: three modes are implemented (section 7.3) because each is needed
-  to replicate one validation target. Default `bea` (Andrew's decision, above).
+  to replicate one validation target. Default `bea` (project owner's decision, above).
 - Commodity price changes are computed from the producers'-price market-share matrix;
   trade and transport margins are handled at the PCE bridge stage, not by adjusting
   the make table as WP6 did. (Section 8.5 explains why this is cleaner.)
@@ -231,7 +231,7 @@ scrap) onto the detail-style codes the rest of the package uses. Phase 1 ships
 means the newest sheet in the workbook). If the summary static files are located
 later, they join the manifest and Phase 2 needs no key.
 
-API facts verified with Andrew's key on 2026-11-22 (saved to
+API facts verified with a registered key on 2026-11-22 (saved to
 `docs/reference/bea_api_inputoutput_params_2026-11-22.json`): the InputOutput
 dataset has ten tables: 258/259 "The Use of Commodities by Industries" (Sector /
 Summary), 261/262 "The Domestic Supply of Commodities by Industries" (Sector /
@@ -286,7 +286,7 @@ zero; S00900 has one nonzero entry, $3.5B in 2017, which is noted in diagnostics
 
 ### 7.3 Scrap and used/secondhand goods (S00401, S00402): three modes
 
-What the legacy work did (verified 2026-11-22 against the Dropbox workbooks):
+What the original 2002 workbooks did (verified 2026-11-22):
 - 2002 detailed table: scrap AND used goods were merged proportionally into the other
   commodity rows in EVERY column, final-demand columns included. Proof: the
   Derivation Model's PCE column sums to 7,534,494.4, which equals BEA's raw PCE
@@ -294,11 +294,11 @@ What the legacy work did (verified 2026-11-22 against the Dropbox workbooks):
   adjustment (-88,851.5), i.e. with scrap (-4,622.7) and used goods (+72,968.6)
   still inside it. The scrap column was dropped from the make table.
 - 2002 summary table: BEA then published one combined commodity, S004 "Scrap, used
-  and secondhand goods". Andrew kept it as an ordinary commodity in both M (133 x
-  134) and U; no redistribution.
+  and secondhand goods". The 2002 summary table kept it as an ordinary commodity in
+  both M (133 x 134) and U; no redistribution.
 
-What the same rule does to the 2017 detail table (builder-check measurements on the
-archive copy): used goods now carry large offsetting final-demand transfers (PCE
+What the same rule does to the 2017 detail table (builder-check measurements on a
+2017 copy of the tables): used goods now carry large offsetting final-demand transfers (PCE
 +$94.3B, equipment investment -$116.1B, S&L equipment -$14.5B) with zero make
 output, so redistributing them inside final-demand columns shrinks equipment
 producers' row totals by up to 31% versus BEA's industry output (106 of 402
@@ -465,22 +465,20 @@ precision by the `bea` scrap mode. The `redistribute` mode is tested on the same
 for identities and non-negativity.
 
 Regression (legacy 2002 tables, fixtures committed as CSV). Provenance, verified
-2026-11-22, all under `~/Library/CloudStorage/Dropbox/Research/Models and Studies
-(Pre-Grad School)/`:
-- 2002 summary inputs: `Carbon Tax Model/Data FIles/2002summary_makeuse.xls`, BEA's
+2026-11-22, from the original 2002 workbooks (held privately; only the extracted
+fixtures are in the repo):
+- 2002 summary inputs: the 2002 BEA summary make/use workbook (`2002summary_makeuse.xls`), BEA's
   original "Table 1. The Make..." / "Table 2. The Use..." sheets (133 industries,
   134 commodities incl. S004 scrap/used, 13 final-demand columns F010...F09I, codes
-  like 1110, 813A, S001). Target: `U.S. Input-Output Tables/2002 Summary
-  Input-Output Table.xlsx`. Same codes on both sides.
-- 2002 detailed inputs: the `Data` sheets of `U.S. Input-Output Tables/Supporting
-  Files/2002 Detailed Make.xlsx` (4,759 rows: industry, commodity, value) and
-  `2002 Detailed Use.xlsx` (56,759 rows: commodity, industry, value). These are
+  like 1110, 813A, S001). Target: the 2002 summary square table. Same codes on both sides.
+- 2002 detailed inputs: the flat `Data` sheets of the 2002 detailed make workbook
+  (4,759 rows: industry, commodity, value) and use workbook (56,759 rows:
+  commodity, industry, value). These are
   BEA's raw flat files with S00401/S00402/S00300/S00900 still present, but with the
   methodology paper's step-1 recoding already applied (1111A0 -> 111170 etc.).
-  Target: `2002 Detailed Input-Output Table.xlsx`, which uses the same recoded codes,
+  Target: the 2002 detailed square table, which uses the same recoded codes,
   so no crosswalk is needed and the test exercises the full pipeline including the
-  `redistribute` step. The adjusted `... Use Table` sheets in those workbooks and in
-  the Derivation Model are intermediate products, not inputs.
+  `redistribute` step.
 - Fixture extraction is a one-time, documented script run outside the package (the
   .xls files need xlrd, which is not a package dependency); outputs are CSVs under
   `tests/fixtures/2002/`. The detailed fixtures (~3 MB) are stored gzip-compressed;
@@ -520,7 +518,7 @@ DEVLOG.txt, README.md, pyproject.toml
 
 README gets: purpose, one-paragraph method, install, the two CLI commands, a worked
 example (carbon preset and a plain industry tax), how validation was done, citation
-to the methodology paper and WP6. License: to be chosen by Andrew (MIT suggested).
+to the methodology paper and WP6. License: to be chosen by the project owner (MIT suggested).
 
 ## 11. Left to the builder
 
@@ -533,10 +531,9 @@ to the methodology paper and WP6. License: to be chosen by Andrew (MIT suggested
 
 ## 12. Open items
 
-- BEA API key: none exists on Andrew's machine as of 2026-11-22 (a BLS key does,
-  which is a different agency and only matters for a future CEX step). Phase 2
-  waits on registration at https://apps.bea.gov/api/signup/ (free; name and
-  email); the key goes in `.zshrc` as `BEA_API_KEY`.
+- BEA API key: Phase 2 needs one (free registration at
+  https://apps.bea.gov/api/signup/); the package reads it from the `BEA_API_KEY`
+  environment variable.
 - License choice (MIT suggested).
 - Whether to commit generated 2017 output tables to the repo (~5 MB) or publish
   them as release assets.

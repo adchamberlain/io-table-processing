@@ -23,3 +23,6 @@ dist/
 
 # superpowers plan workspaces (scratch)
 .superpowers/
+
+# Private working log, kept out of the published repository
+DEVLOG.txt

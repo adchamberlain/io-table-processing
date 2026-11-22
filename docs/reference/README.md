@@ -18,4 +18,3 @@ External literature consulted (see DEVLOG.txt, 2026-11-22):
 - Mathur & Morris (2014), "Distributional Effects of a Carbon Tax in Broader U.S.
   Fiscal Reform", Brookings.
 
-`archive/` holds the previous (unsuccessful) attempt; kept for reference only.
