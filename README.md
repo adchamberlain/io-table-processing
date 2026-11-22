@@ -48,7 +48,7 @@ model on that table, with base-year prices equal to 1:
 
 ```
 A     = Z diag(y)^-1                input from industry i per dollar of industry j's output
-v     = value added per dollar of output (1 minus the column sums of A)
+v     = column sums of V / y        value added per dollar of each industry's output
 A_hat = A * (1 + T)                 elementwise; T holds ad valorem taxes on intermediate sales
 p_hat = (I - A_hat')^-1 (v + tau)   tau: the tax per dollar of each industry's output
 ```
@@ -206,9 +206,9 @@ formulation of Working Paper No. 6 (see [Validation](#validation)), and
 `--no-pce` skips the PCE bridge. The run writes six files into `--out` (default
 `data/output`):
 
-- `industry_prices.csv`: code, description and pct_change for each industry.
+- `industry_prices.csv`: code, description and price_change for each industry.
 - `commodity_prices.csv`: the same for each commodity, in producers' prices.
-- `pce_prices.csv`: nipa_line, pce_category, pct_change, base_spending (in
+- `pce_prices.csv`: nipa_line, pce_category, price_change, base_spending (in
   purchasers' prices) and burden for each PCE category.
 - `burden_by_final_demand.csv`: base spending and burden for each of BEA's 20
   final-demand columns.
@@ -237,7 +237,7 @@ result = model.run([
     shocks.ValueAddedTax("V00100", rate=0.01),                  # 1 percent payroll tax, all industries
 ])
 result.summary
-result.pce_prices.sort_values("pct_change", ascending=False).head()
+result.pce_prices.sort_values("price_change", ascending=False).head()
 
 carbon = model.run(shocks.carbon_price(dollars_per_ton_co2=50, emissions_year=2024))
 ```

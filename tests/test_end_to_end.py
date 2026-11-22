@@ -19,5 +19,5 @@ def test_carbon_50_on_2017_detail(tmp_path):
     assert fd["F05000"] < 0 and without_imports.sum() > s["total_tax"]
     assert 0.3 < s["pce_burden"] / without_imports.sum() < 0.9
     pce = pd.read_csv(tmp_path / "pce_prices.csv")
-    top = pce.sort_values("pct_change", ascending=False).head(5)["pce_category"].str.lower().str.cat(sep=" ")
+    top = pce.sort_values("price_change", ascending=False).head(5)["pce_category"].str.lower().str.cat(sep=" ")
     assert "gas" in top or "electric" in top or "fuel" in top         # energy categories must lead

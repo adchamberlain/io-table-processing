@@ -3,7 +3,7 @@ import dataclasses
 import numpy as np
 import pandas as pd
 import pytest
-from iotables import bridge, leontief, shocks
+from iotables import bridge, leontief, shocks, square
 from conftest import build_2002_summary
 
 def test_baseline_is_ones(two_by_two):
@@ -11,22 +11,22 @@ def test_baseline_is_ones(two_by_two):
 
 def test_output_tax_on_industry(two_by_two):
     r = leontief.PriceModel(two_by_two).run([shocks.IndustryTax("1", rate=0.1)])
-    assert np.allclose(r.industry_prices["pct_change"].values, [0.125, 0.0416667], atol=1e-6)
+    assert np.allclose(r.industry_prices["price_change"].values, [0.125, 0.0416667], atol=1e-6)
     assert r.burden_by_final_demand.loc[0, "burden"] == pytest.approx(10.0)       # 0.125*70 + 0.0416667*30
     assert r.summary["total_tax"] == pytest.approx(10.0) and abs(r.summary["identity_residual"]) < 1e-9
 
 def test_flow_tax(two_by_two):
     r = leontief.PriceModel(two_by_two).run([shocks.FlowTax("1", "2", 0.5)])
-    assert np.allclose(r.industry_prices["pct_change"].values, [0.0666667, 0.2], atol=1e-6)
+    assert np.allclose(r.industry_prices["price_change"].values, [0.0666667, 0.2], atol=1e-6)
     assert r.summary["total_tax"] == pytest.approx(10.6666667, abs=1e-6)         # 0.5*20*1.0666667
     assert abs(r.summary["identity_residual"]) < 1e-9
 
 def test_wp6_formulation(two_by_two):
     m = leontief.PriceModel(two_by_two, formulation="wp6")
     r = m.run([shocks.IndustryTax("1", dollars=3)])                                # t_1 = 3/30 = 0.1
-    assert np.allclose(r.industry_prices["pct_change"].values, [0.0256410, 0.0427350], atol=1e-6)
+    assert np.allclose(r.industry_prices["price_change"].values, [0.0256410, 0.0427350], atol=1e-6)
     r2 = m.run([shocks.IndustryTax("1", rate=0.1)])
-    assert np.allclose(r2.industry_prices["pct_change"].values, r.industry_prices["pct_change"].values)
+    assert np.allclose(r2.industry_prices["price_change"].values, r.industry_prices["price_change"].values)
     with pytest.raises(ValueError):
         m.run([shocks.FlowTax("1", "2", 0.1)])
 
@@ -35,7 +35,7 @@ def test_wp6_replicates_2009_price_impacts():
     sq = build_2002_summary()                                   # helper in conftest using the Task 8 fixtures (keep mode)
     r = leontief.PriceModel(sq, formulation="wp6").run([shocks.IndustryTax("2110", rate=0.3954367423979727),
                                                          shocks.IndustryTax("2121", rate=1.8694564238089508)])
-    p = r.industry_prices.set_index("code")["pct_change"] + 1
+    p = r.industry_prices.set_index("code")["price_change"] + 1
     for code, expected in {"1110": 1.0249967298379448, "2110": 1.0202324094628146, "2121": 1.1472503329037465,
                            "2211": 1.1650275425430783, "2212": 1.185103762352647, "S007": 1.0104328673003136}.items():
         assert p[code] == pytest.approx(expected, abs=1e-6)
@@ -50,15 +50,67 @@ def test_output_tax_identity_on_2002_table():
     assert list(r.burden_by_final_demand.columns) == ["code", "description", "base_spending", "burden"]
     assert list(r.industry_prices["code"]) == sq.industries
 
+def _no_intermediate_sales(two_by_two):
+    """two_by_two with industry 2 selling only to final demand, balanced: Z = [[10, 20], [0, 0]], F01000 = [70, 100],
+    V00300 = [60, 60], so every row and column still sums to 100."""
+    return dataclasses.replace(two_by_two, Z=pd.DataFrame([[10.0, 20.0], [0.0, 0.0]], index=["1", "2"], columns=["1", "2"]),
+                               F=pd.DataFrame({"F01000": [70.0, 100.0]}, index=["1", "2"]),
+                               V=pd.DataFrame([[30.0, 20.0], [0.0, 0.0], [60.0, 60.0]],
+                                              index=["V00100", "V00200", "V00300"], columns=["1", "2"]))
+
 def test_price_model_rejects_bad_inputs(two_by_two):
     with pytest.raises(ValueError, match="formulation"):
         leontief.PriceModel(two_by_two, formulation="leontief")
     with pytest.raises(ValueError, match="zero output"):
         leontief.PriceModel(dataclasses.replace(two_by_two, y=pd.Series({"1": 100.0, "2": 0.0})))
-    no_sales = dataclasses.replace(two_by_two, Z=pd.DataFrame([[10.0, 20.0], [0.0, 0.0]], index=["1", "2"], columns=["1", "2"]),
-                                   F=pd.DataFrame({"F01000": [70.0, 100.0]}, index=["1", "2"]))
-    with pytest.raises(ValueError, match="intermediate sales"):                     # industry 2 sells nothing to industries
+    no_sales = _no_intermediate_sales(two_by_two)
+    with pytest.raises(ValueError, match=r"intermediate sales, and these industries have none: \['2'\]"):
         leontief.PriceModel(no_sales, formulation="wp6").run([shocks.IndustryTax("2", dollars=1)])
+
+def test_wp6_rejects_a_rate_on_an_industry_without_intermediate_sales(two_by_two):
+    m = leontief.PriceModel(_no_intermediate_sales(two_by_two), formulation="wp6")
+    with pytest.raises(ValueError, match=r"intermediate sales, and these industries have none: \['2'\]"):
+        m.run([shocks.IndustryTax("2", rate=0.1)])                                   # would otherwise change nothing
+    assert m.run([shocks.IndustryTax("1", rate=0.1)]).summary["total_tax"] == pytest.approx(3.0)   # 0.1 * 30
+
+def test_price_model_rejects_an_unbalanced_table(two_by_two):
+    Z = two_by_two.Z.copy(); Z.loc["1", "2"] += 1.0                                  # row 1 and column 2 sum to 101
+    with pytest.raises(ValueError, match="row_minus_col"):
+        leontief.PriceModel(dataclasses.replace(two_by_two, Z=Z))
+
+def test_baseline_uses_the_value_added_rows(two_by_two):
+    V = two_by_two.V.copy(); V.loc["V00300", "2"] += 5e-7                            # within check_identities' 1e-6
+    with pytest.raises(ValueError, match=r"baseline prices are not 1 .*industry '2'"):  # p - 1 = [3.1e-9, 9.4e-9]
+        leontief.PriceModel(dataclasses.replace(two_by_two, V=V))
+
+def test_price_model_checks_a_table_read_without_its_csv_folder(two_by_two):
+    frame = two_by_two.to_frame()
+    back = square.SquareIOTable.from_frame(frame)                                    # no market shares, no commodity output
+    assert back.check_identities()["shares_minus_one"] is None
+    r = leontief.PriceModel(back).run([shocks.IndustryTax("1", rate=0.1)])
+    pd.testing.assert_frame_equal(r.industry_prices, leontief.PriceModel(two_by_two).run([shocks.IndustryTax("1", rate=0.1)]).industry_prices)
+    frame.loc["1", "2"] += 1.0                                                       # Z no longer adds up to y
+    with pytest.raises(ValueError, match="y_minus_rowsum"):
+        leontief.PriceModel(square.SquareIOTable.from_frame(frame))
+
+def test_price_model_rejects_bad_margin_codes(two_by_two):
+    b = synthetic_bridge()
+    with pytest.raises(ValueError, match=r"exactly the keys .*missing \['retail'\], unexpected \[\]"):
+        leontief.PriceModel(two_by_two, pce_bridge=b, margin_codes={"transport": ["b"], "wholesale": ["b"]})
+    with pytest.raises(ValueError, match=r"missing \[\], unexpected \['trade'\]"):
+        leontief.PriceModel(two_by_two, pce_bridge=b,
+                            margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"], "trade": ["a"]})
+    with pytest.raises(ValueError, match=r"margin_codes\['wholesale'\]: none of \['zzz'\]"):
+        leontief.PriceModel(two_by_two, pce_bridge=b, margin_codes={"transport": ["b"], "wholesale": ["zzz"], "retail": ["a"]})
+    no_b = {**two_by_two.meta, "commodity_output": pd.Series({"a": 90.0, "b": 0.0})}  # "b" has no output
+    with pytest.raises(ValueError, match=r"margin_codes\['transport'\]"):
+        leontief.PriceModel(dataclasses.replace(two_by_two, meta=no_b), pce_bridge=b,
+                            margin_codes={"transport": ["b"], "wholesale": ["a"], "retail": ["a"]})
+
+def test_solve_rejects_misordered_axes(two_by_two):
+    m = leontief.PriceModel(two_by_two)
+    with pytest.raises(ValueError, match="same order"):
+        m._solve(m.A.loc[:, ["2", "1"]], m.v)
 
 def synthetic_bridge():
     rows = pd.DataFrame([["1", "Thing", "a", "Alpha", 80, 5, 5, 10, 100],
@@ -70,28 +122,28 @@ def synthetic_bridge():
 def test_commodity_and_pce_prices(two_by_two):
     m = leontief.PriceModel(two_by_two, pce_bridge=synthetic_bridge(), margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]})
     r = m.run([shocks.IndustryTax("1", rate=0.1)])
-    c = r.commodity_prices.set_index("code")["pct_change"]
+    c = r.commodity_prices.set_index("code")["price_change"]
     assert c["a"] == pytest.approx(0.125) and c["b"] == pytest.approx(0.0492424, abs=1e-6)
     p = r.pce_prices.set_index("nipa_line")
-    assert p.loc["1", "pct_change"] == pytest.approx(0.10984848, abs=1e-6)       # (80*.125 + 20*.0492424)/100
-    assert p.loc["2", "pct_change"] == pytest.approx(0.0492424, abs=1e-6)
-    assert p.loc["3", "pct_change"] == 0.0
+    assert p.loc["1", "price_change"] == pytest.approx(0.10984848, abs=1e-6)       # (80*.125 + 20*.0492424)/100
+    assert p.loc["2", "price_change"] == pytest.approx(0.0492424, abs=1e-6)
+    assert p.loc["3", "price_change"] == 0.0
     assert r.summary["pce_burden"] == pytest.approx(13.44697, abs=1e-4)
     assert any("zzz" in n for n in r.notes)
 
 def test_bridge_missing_commodity_noted(two_by_two):
     b = synthetic_bridge(); b.rows.loc[b.rows.nipa_line == "2", "purchasers_value"] = 0
     r = leontief.PriceModel(two_by_two, pce_bridge=b, margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]}).run([shocks.IndustryTax("1", rate=0.1)])
-    assert r.pce_prices.set_index("nipa_line").loc["2", "pct_change"] == 0.0 and any("purchasers" in n for n in r.notes)
+    assert r.pce_prices.set_index("nipa_line").loc["2", "price_change"] == 0.0 and any("purchasers" in n for n in r.notes)
 
 def test_pce_frames_summary_and_notes(two_by_two):
     rows = synthetic_bridge().rows.iloc[[2, 1, 0]]                                   # lines 3, 2, 1: sorted back by number
     m = leontief.PriceModel(two_by_two, pce_bridge=bridge.PCEBridge(rows=rows, year=2017, meta={}),
                             margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]})
     r = m.run([shocks.IndustryTax("1", rate=0.1)])
-    assert list(r.commodity_prices.columns) == ["code", "description", "pct_change"]
+    assert list(r.commodity_prices.columns) == ["code", "description", "price_change"]
     assert r.commodity_prices["description"].tolist() == ["Alpha", "Beta"]
-    assert list(r.pce_prices.columns) == ["nipa_line", "pce_category", "pct_change", "base_spending", "burden"]
+    assert list(r.pce_prices.columns) == ["nipa_line", "pce_category", "price_change", "base_spending", "burden"]
     assert r.pce_prices["nipa_line"].tolist() == ["1", "2", "3"] and r.pce_prices["base_spending"].tolist() == [100.0, 50.0, 10.0]
     assert r.summary["pce_share_of_burden"] == pytest.approx(r.summary["pce_burden"] / 10.0)
     assert len(r.notes) == 1                                                         # one note for "zzz"

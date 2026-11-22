@@ -314,10 +314,10 @@ def test_run_cli_writes_results_and_prints_largest_pce_increases(tmp_path, toy_w
     assert f"{expected.summary['pce_share_of_burden']:.4f}" in _line_with(out, "pce_share_of_burden")
     lines = _section(out, "largest price increases")
     assert lines[0].split() == ["line", "change", "base", "spending", "burden", "category"]
-    pce = expected.pce_prices.sort_values("pct_change", ascending=False)
+    pce = expected.pce_prices.sort_values("price_change", ascending=False)
     assert [line.split()[0] for line in lines[1:]] == list(pce["nipa_line"])
     top = pce.iloc[0]
-    assert lines[1].split() == [top["nipa_line"], f"{top['pct_change']:.3%}", f"{top['base_spending']:,.1f}",
+    assert lines[1].split() == [top["nipa_line"], f"{top['price_change']:.3%}", f"{top['base_spending']:,.1f}",
                                 f"{top['burden']:,.1f}", *top["pce_category"].split()]
     assert any("S00401" in line for line in _section(out, "Notes"))
     assert [line.split(None, 1)[1] for line in _section(out, "Wrote results")] == [str(out_dir / n) for n in RESULT_FILES]
@@ -342,7 +342,7 @@ def test_run_cli_carbon_preset_and_wp6(tmp_path, toy_workbooks, monkeypatch, cap
     assert got["summary.json"]["formulation"] == "wp6" and got["summary.json"]["pce_burden"] is None
     assert got["summary.json"]["carbon"] == {"dollars_per_ton_co2": 4.0, "emissions_year": 2024, "coverage": "upstream"}
     assert [s["code"] for s in got["shocks.json"]] == ["A", "C"]
-    assert got["pce_prices.csv"].empty and list(got["pce_prices.csv"].columns) == ["nipa_line", "pce_category", "pct_change",
+    assert got["pce_prices.csv"].empty and list(got["pce_prices.csv"].columns) == ["nipa_line", "pce_category", "price_change",
                                                                                  "base_spending", "burden"]
     assert "largest price increases" not in capsys.readouterr().out
 

@@ -73,8 +73,8 @@ RESULT_FILES = ("industry_prices.csv", "commodity_prices.csv", "pce_prices.csv",
                 "summary.json", "shocks.json")
 # The PriceResult frames' columns, for the header-only file of a part a run does not produce.
 _RESULT_COLUMNS = {
-    "commodity_prices": ["code", "description", "pct_change"],
-    "pce_prices": ["nipa_line", "pce_category", "pct_change", "base_spending", "burden"],
+    "commodity_prices": ["code", "description", "price_change"],
+    "pce_prices": ["nipa_line", "pce_category", "price_change", "base_spending", "burden"],
 }
 _TABLE_PARTS = ("market_shares.csv", "labels.csv", "meta.json")  # what --table needs from the CSV folder
 _N_GAPS = 10  # industries listed per build diagnostic
@@ -224,11 +224,12 @@ def _build(args: argparse.Namespace) -> square.SquareIOTable:
     return sq
 
 
-def _print_residuals(residuals: dict[str, float]) -> None:
+def _print_residuals(residuals: dict[str, float | None]) -> None:
     print()
     print("Identity residuals ($ millions):")
     for name, value in residuals.items():
-        print(f"  {name:<18} {value:.3e}")
+        shown = "n/a (no market shares)" if value is None else f"{value:.3e}"
+        print(f"  {name:<18} {shown}")
 
 
 def _print_gaps(heading: str, gaps: pd.Series, labels: pd.Series) -> None:
@@ -442,7 +443,8 @@ def _read_table(path: Path) -> tuple[square.SquareIOTable, list[str]]:
     """The table in the xlsx at `path`, with its CSV folder's parts when they are all there, and notes.
 
     The CSV folder is the one `build` writes next to the xlsx, of the same stem.
-    A table read with it is checked like a built one (`check_identities`).
+    A table read with it is checked like a built one (`check_identities`); one
+    read without it is checked for balance by `leontief.PriceModel`.
     """
     folder = path.with_suffix("")
     frame = square.read_square_frame(path)
@@ -496,10 +498,10 @@ def _print_summary(summary: dict) -> None:
 
 def _print_largest_pce(pce: pd.DataFrame) -> None:
     """The _N_PCE NIPA lines with the largest price increases: line, change, base spending, burden, category."""
-    top = pce.sort_values("pct_change", ascending=False, kind="stable").head(_N_PCE)
+    top = pce.sort_values("price_change", ascending=False, kind="stable").head(_N_PCE)
     print()
     print(f"The {len(top)} PCE categories with the largest price increases, of {len(pce)} NIPA lines ($ millions):")
     print(f"  {'line':<6} {'change':>9} {'base spending':>15} {'burden':>13}  category")
     for row in top.itertuples(index=False):
-        print(f"  {row.nipa_line:<6} {row.pct_change:>9.3%} {row.base_spending:>15,.1f} {row.burden:>13,.1f}"
+        print(f"  {row.nipa_line:<6} {row.price_change:>9.3%} {row.base_spending:>15,.1f} {row.burden:>13,.1f}"
               f"  {row.pce_category}")

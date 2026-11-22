@@ -78,8 +78,31 @@ def test_drop_codes_removed_and_recorded_keep_mode(toy_make, toy_use):
 def test_zero_make_column_with_nonzero_use_rejected(toy_make, toy_use):
     # spec 7.4: q = 0 requires zero use, also when the make column exists (S00300 kept here by drop=())
     make2 = add_make_column(toy_make, "S00300", [0, 0, 0]); use2 = add_use_row(toy_use, "S00300", [2, 0, 0], fd=[-2])
-    with pytest.raises(ValueError, match=r"\['S00300'\]"):
+    with pytest.raises(ValueError, match=r"\['S00300'\]; scrap/used codes with no producer are removed under "
+                                         r"scrap='bea' or 'redistribute'"):
         square.build_square_table(make2, use2, scrap="keep", drop=())
+
+@pytest.mark.parametrize("scrap, scrap_codes", [("keep", ()), ("bea", ("S00401", "S00402")),
+                                                ("redistribute", ("S00401", "S00402"))])
+def test_diagnostics_record_the_drop_and_scrap_codes_applied(toy_make, toy_use, scrap, scrap_codes):
+    # S00300 and S00402 (all zero, so "keep" accepts it) are in the use table only, S00900 in neither table:
+    # absent codes are not recorded
+    use2 = add_use_row(add_use_row(toy_use, "S00300", [2, 0, 0], fd=[-2]), "S00402", [0, 0, 0], fd=[0])
+    sq = square.build_square_table(toy_make, use2, scrap=scrap)
+    d = sq.meta["diagnostics"]
+    assert d["drop_codes"] == ("S00300",) and d["scrap_codes"] == scrap_codes
+    base = square.build_square_table(toy_make, toy_use, scrap=scrap, drop=("S00900",), scrap_codes=("S00402", "S00401"))
+    assert base.meta["diagnostics"]["drop_codes"] == ()
+    assert base.meta["diagnostics"]["scrap_codes"] == (() if scrap == "keep" else ("S00401",))
+    assert json.loads(json.dumps(square._jsonable(d)))["scrap_codes"] == list(scrap_codes)   # meta.json keeps them
+
+def test_n_is_a_copy_of_the_market_shares_without_nonscrap_scaling(toy_make, toy_use):
+    for scrap in ("keep", "redistribute"):
+        sq = square.build_square_table(toy_make, toy_use, scrap=scrap)
+        pd.testing.assert_frame_equal(sq.N, sq.market_shares)
+        assert sq.N is not sq.market_shares
+        sq.N.iloc[0, 0] += 1.0
+        assert sq.N.iloc[0, 0] != sq.market_shares.iloc[0, 0]
 
 def test_build_rejects_unknown_scrap_mode(toy_make, toy_use):
     with pytest.raises(ValueError, match="bogus"):

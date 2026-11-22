@@ -90,7 +90,7 @@ class SquareIOTable:
     def n(self) -> int:
         return len(self.Z.index)
 
-    def check_identities(self, tol: float = 1e-6) -> dict[str, float]:
+    def check_identities(self, tol: float = 1e-6) -> dict[str, float | None]:
         """Residuals of the table's identities; raises ValueError beyond `tol`.
 
         See `validate.check_identities`.
@@ -145,7 +145,8 @@ class SquareIOTable:
         commodity_labels is empty, each final-demand code is its own label and
         meta (a copy of `meta`, default empty) has no commodity_output. Such a
         table gives industry prices and final-demand burdens; commodity and PCE
-        prices, commodity taxes and `check_identities` need what it lacks.
+        prices and commodity taxes need what it lacks, and `check_identities`
+        checks its balance but not its market shares.
 
         Raises ValueError when the rows are not the industries then V00100,
         V00200, V00300, T008, the columns not Description, the same industries
@@ -418,8 +419,11 @@ def build_square_table(
     [Z | F], and V00300 balances each column. Codes in `drop` or `scrap_codes`
     that a table lacks are ignored.
 
-    Scrap mode "bea" records the nonscrap ratio (a Series by industry) and the
-    scrap purchases it drops, {code: {"intermediate": $, "final_demand": $}}, in
+    `meta["diagnostics"]` records "scrap_mode", "drop_codes" and "scrap_codes":
+    the codes of `drop` and of `scrap_codes` that were removed (those in the
+    use rows or make columns, in the order given; "scrap_codes" is () in mode
+    "keep"). Scrap mode "bea" records the nonscrap ratio (a Series by industry)
+    and the scrap purchases it drops, {code: {"intermediate": $, "final_demand": $}}, in
     `meta["diagnostics"]` as "nonscrap_ratio" and "scrap_purchases_dropped".
     Mode "redistribute" (see `redistribute_rows`) records "redistributed":
     {"intermediate": $ moved in U, "final_demand": $ moved in D, "unallocated":
@@ -444,12 +448,14 @@ def build_square_table(
     g = use.industry_output.loc[industries] if use.industry_output is not None else M.sum(axis=1)
     diagnostics: dict = {"scrap_mode": scrap}
 
+    diagnostics["drop_codes"] = _present(drop, M, U)
     M, U, D, diagnostics["dropped"], diagnostics["dropped_make_output"] = _remove_commodities(
         M, U, D, drop
     )
 
     # Scrap mode (spec 7.3), step 1: which scrap and used-goods rows and columns
     # leave the tables. "keep" treats them as ordinary commodities.
+    diagnostics["scrap_codes"] = () if scrap == "keep" else _present(scrap_codes, M, U)
     nonscrap_ratio = None
     if scrap == "redistribute":
         present = [c for c in scrap_codes if c in U.index]
@@ -473,8 +479,8 @@ def build_square_table(
     q = M.sum(axis=0)
     shares = market_shares(M)
     # Scrap mode, step 2: N from the market shares. "keep" and "redistribute" use
-    # them as they are; "bea" scales each industry's row up by 1 / its nonscrap ratio.
-    N = shares if nonscrap_ratio is None else shares.div(nonscrap_ratio, axis=0)
+    # (a copy of) them as they are; "bea" scales each industry's row up by 1 / its nonscrap ratio.
+    N = shares.copy() if nonscrap_ratio is None else shares.div(nonscrap_ratio, axis=0)
 
     Z = N @ U  # pandas aligns N's commodity columns with U's commodity rows by code
     F = N @ D
@@ -561,6 +567,11 @@ def _remove_commodities(
     )
 
 
+def _present(codes: Sequence[str], M: pd.DataFrame, U: pd.DataFrame) -> tuple[str, ...]:
+    """The `codes` that are make columns or use rows, in the order given."""
+    return tuple(c for c in codes if c in M.columns or c in U.index)
+
+
 def _nonscrap_ratio(M: pd.DataFrame, g: pd.Series, scrap_codes: Sequence[str]) -> pd.Series:
     """Each industry's nonscrap ratio r = (g - s) / g, the share of its output that is not scrap.
 
@@ -594,6 +605,7 @@ def _align_commodities(M: pd.DataFrame, U: pd.DataFrame, D: pd.DataFrame) -> pd.
     if used_without_output:
         raise ValueError(
             "commodities with zero make output (no make column, or an all-zero one) "
-            f"have nonzero use: {used_without_output}"
+            f"have nonzero use: {used_without_output}; scrap/used codes with no producer "
+            "are removed under scrap='bea' or 'redistribute'"
         )
     return M

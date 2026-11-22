@@ -1,4 +1,5 @@
 # tests/test_parse.py
+import re
 import pytest
 from iotables import parse
 from conftest import write_bea_workbook
@@ -57,13 +58,22 @@ def test_read_bea_grid_rejects_duplicate_codes(tmp_path):
     with pytest.raises(ValueError, match="duplicate column codes"):
         parse.read_bea_grid(p, "2017")
 
-def test_read_bea_grid_non_numeric_cells_become_zero_and_note_is_excluded(tmp_path):
-    p = tmp_path / "dots.xlsx"
+def test_read_bea_grid_blank_cells_become_zero_and_note_is_excluded(tmp_path):
+    p = tmp_path / "blanks.xlsx"
     write_bea_workbook(p, col_codes=["A", "B"], col_descs=["Alpha", "Beta"],
-                       rows=[("A", "Alpha ind", ["...", 7.5]), ("B", "Beta ind", [2, None])])
+                       rows=[("A", "Alpha ind", ["  ", 7.5]), ("B", "Beta ind", [2, None])])
     g = parse.read_bea_grid(p, "2017")
     assert g.values.shape == (2, 2) and str(g.values.dtypes.unique()[0]) == "float64"
     assert g.values.loc["A", "A"] == 0.0 and g.values.loc["A", "B"] == 7.5 and g.values.loc["B", "A"] == 2.0
+    assert g.values.loc["B", "B"] == 0.0
+
+@pytest.mark.parametrize("text", ["(D)", "..."])
+def test_read_bea_grid_rejects_non_numeric_text(tmp_path, text):
+    p = tmp_path / "suppressed.xlsx"
+    write_bea_workbook(p, col_codes=["A", "B"], col_descs=["Alpha", "Beta"],
+                       rows=[("A", "Alpha ind", [1, 7.5]), ("B", "Beta ind", [2, text])])
+    with pytest.raises(ValueError, match=rf"sheet '2017': row 'B', column 'B' is not a number: '{re.escape(text)}'"):
+        parse.read_bea_grid(p, "2017")
 
 
 def test_make_from_grid(toy_make):
@@ -151,6 +161,24 @@ def test_load_bea_tables_downloads_into_bea_dir_and_records_meta(tmp_path, monke
     assert make.meta["provenance"]["url"] == sources.bea_detail_url("make", "before") and use.meta["provenance"]["sha256"] == "abc"
     assert make.meta["year"] == use.meta["year"] == 2017 and make.industries == use.industries == ["A"]
     assert make.meta["level"] == use.meta["level"] == "detail"
+
+def test_load_bea_tables_rejects_make_and_use_of_different_years(tmp_path, monkeypatch):
+    import json
+    from iotables import download
+    def fake_fetch(url, dest_dir, **kw):                                      # make's newest sheet is 2017, use's 2012
+        path = dest_dir / ("make.xlsx" if "Make" in url else "use.xlsx")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        if "Make" in url:
+            write_bea_workbook(path, sheet="2017", col_codes=["A"], col_descs=["a"], rows=[("A", "a", [1])])
+        else:
+            write_bea_workbook(path, sheet="2012", row_label="Commodity Description", col_codes=["A", "F01000"],
+                               col_descs=["a", "PCE"], rows=[("A", "a", [1, 0]), ("V00100", "c", [0, 0]),
+                                                             ("V00200", "t", [0, 0]), ("V00300", "s", [0, 0])])
+        path.with_name(path.name + ".provenance.json").write_text(json.dumps({"url": url}))
+        return path
+    monkeypatch.setattr(download, "fetch", fake_fetch)
+    with pytest.raises(ValueError, match="make table is for 2017 but the use table for 2012"):
+        parse.load_bea_tables("detail", "latest", data_dir=tmp_path)
 
 @pytest.mark.network
 def test_load_bea_tables_detail_2017_shapes():

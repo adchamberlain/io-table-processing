@@ -3,8 +3,12 @@
 Baseline (spec 8.1):
 
     A = Z diag(y)^-1               technical coefficients (input i per $ of output j)
-    v = (y - Z.sum(axis=0)) / y    value added per $ of output
+    v = V.sum(axis=0) / y          value added per $ of output, from the value-added rows
     p = (I - A')^-1 v              a vector of ones (checked to 1e-9)
+
+The table's identities (`validate.check_identities`) are checked first, and
+the baseline check holds only when each column's inputs and value added sum
+to the industry's output.
 
 Shocks (`shocks.py`) become output taxes tau (per $ of output) and flow-tax
 rates T (seller x buyer). Two formulations:
@@ -16,7 +20,8 @@ rates T (seller x buyer). Two formulations:
     "wp6" (spec 8.4), only to reproduce the 2009 Tax Foundation WP6 results
         t_i = dollars_i / industry i's intermediate sales (an IndustryTax given
         as a rate is t_i itself);  A_hat = diag(1 + t) A;  p_hat = (I - A_hat')^-1 v
-        No flow taxes, and no burden identity.
+        No flow taxes, no tax on an industry without intermediate sales (an
+        error, in dollars or as a rate), and no burden identity.
 
 Consumer prices (spec 8.5), from the industry price changes dp = p_hat - 1:
 
@@ -45,6 +50,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from iotables import validate
 from iotables.bridge import MARGIN_CODES, PCEBridge
 from iotables.shocks import FlowTax, IndustryTax, Shock, industry_dollars, to_tau_T
 from iotables.square import SquareIOTable
@@ -57,13 +63,13 @@ BASELINE_TOL = 1e-9  # largest allowed |p - 1| in the base year
 class PriceResult:
     """The outcome of `PriceModel.run` ($ millions; price changes as fractions).
 
-    `industry_prices`: columns code, description, pct_change, one row per
+    `industry_prices`: columns code, description, price_change, one row per
     industry in table order. `commodity_prices` (None when the table has no
     commodity output, `meta["commodity_output"]`): columns code, description,
-    pct_change, one row per commodity in market-share column order.
+    price_change, one row per commodity in market-share column order.
     `pce_prices` (None without a PCE bridge): columns nipa_line, pce_category,
-    pct_change, base_spending (the line's purchasers' value), burden
-    (pct_change x base_spending), one row per NIPA line, sorted by line number.
+    price_change, base_spending (the line's purchasers' value), burden
+    (price_change x base_spending), one row per NIPA line, sorted by line number.
     `burden_by_final_demand`: columns code, description, base_spending (the
     column's total), burden (dp' F, the added cost of the column's purchases).
     `summary`: formulation, total_tax, final_demand_burden (the burdens' sum),
@@ -87,14 +93,21 @@ class PriceModel:
     """The price model on `sq` in one `formulation` ("output_tax" or "wp6").
 
     With a `pce_bridge`, `run` also gives PCE price changes, which need the
-    margin commodities: `margin_codes` maps "transport", "wholesale" and
-    "retail" to commodity codes, and defaults to `bridge.MARGIN_CODES` for the
-    table's `meta["level"]` (None when that level has no entry). A table
-    without `meta["commodity_output"]` (one read back without its market
-    shares, `SquareIOTable.from_frame`) gives industry prices and burdens only.
-    Raises ValueError for an unknown formulation, a bridge with such a table,
-    an industry with zero output (its coefficients are undefined) or baseline
-    prices more than 1e-9 from 1.
+    margin commodities: `margin_codes` maps exactly "transport", "wholesale"
+    and "retail" to commodity codes, at least one of each with positive
+    commodity output in the table, and defaults to `bridge.MARGIN_CODES` for
+    the table's `meta["level"]`. A table without `meta["commodity_output"]`
+    (one read back without its market shares, `SquareIOTable.from_frame`)
+    gives industry prices and burdens only.
+
+    Every table is checked on construction: its identities
+    (`validate.check_identities`, which checks the market shares only when the
+    table has them) and its baseline prices. Raises ValueError for an unknown
+    formulation, a bridge with a table without commodity output, an industry
+    with zero output (its coefficients are undefined), a failed identity,
+    baseline prices more than 1e-9 from 1 (the message names the industry
+    farthest from 1) and, with a bridge, margin codes that are missing for the
+    table's level, have other keys or name no commodity with output.
     """
 
     def __init__(
@@ -118,13 +131,35 @@ class PriceModel:
         y = sq.y.loc[industries]
         if (y == 0).any():
             raise ValueError(f"industries with zero output: {list(y.index[y == 0])}")
+        validate.check_identities(sq)
+        if pce_bridge is not None:
+            self._check_margin_codes()
         Z = sq.Z.loc[industries, industries]
         self.A = Z.div(y, axis=1)
-        self.v = (y - Z.sum(axis=0)) / y
+        self.v = sq.V.loc[:, industries].sum(axis=0) / y
         deviation = (self.baseline_prices() - 1).abs()
         if not (deviation <= BASELINE_TOL).all():  # written so that NaN fails too
+            worst = deviation.fillna(np.inf).idxmax()
             raise ValueError(f"baseline prices are not 1 within {BASELINE_TOL}: max |p - 1| = "
-                             f"{deviation.max()} (industry {deviation.idxmax()!r})")
+                             f"{deviation[worst]} (industry {worst!r}); the table's columns of inputs "
+                             "and value added must sum to industry output")
+
+    def _check_margin_codes(self) -> None:
+        """Raise ValueError unless `margin_codes` has exactly the three margins, each with a commodity with output."""
+        if self.margin_codes is None:
+            raise ValueError(f"no built-in margin codes for table level {self.sq.meta.get('level')!r}; "
+                             "pass margin_codes={'transport': [...], 'wholesale': [...], 'retail': [...]}")
+        expected = {"transport", "wholesale", "retail"}
+        keys = set(self.margin_codes)
+        if keys != expected:
+            raise ValueError(f"margin_codes must have exactly the keys {sorted(expected)}; "
+                             f"missing {sorted(expected - keys)}, unexpected {sorted(keys - expected, key=str)}")
+        q = self.sq.meta["commodity_output"]
+        commodities = set(self.sq.market_shares.columns)
+        for margin, codes in self.margin_codes.items():
+            if not any(c in commodities and c in q.index and q[c] > 0 for c in codes):
+                raise ValueError(f"margin_codes[{margin!r}]: none of {list(codes)} is a commodity of the table "
+                                 "with positive output")
 
     def baseline_prices(self) -> pd.Series:
         """p = (I - A')^-1 v, by industry: ones for a balanced table."""
@@ -133,9 +168,10 @@ class PriceModel:
     def run(self, shocks: Sequence[Shock]) -> PriceResult:
         """Prices and burdens after `shocks` (they add; see `shocks.py`).
 
-        Raises ValueError for a flow tax under "wp6", or a dollar amount there
-        on an industry with no intermediate sales; KeyError for an unknown code;
-        with a bridge, ValueError as in `margin_price_changes`.
+        Raises ValueError for a flow tax under "wp6", or an industry tax there
+        (dollars or rate) on an industry with no intermediate sales; KeyError
+        for an unknown code; with a bridge, ValueError as in
+        `margin_price_changes`.
         """
         shocks = list(shocks)
         if self.formulation == "output_tax":
@@ -157,12 +193,12 @@ class PriceModel:
             industry_prices=pd.DataFrame({
                 "code": industries,
                 "description": list(self.sq.industry_labels.loc[industries]),
-                "pct_change": dp.loc[industries].to_numpy(),
+                "price_change": dp.loc[industries].to_numpy(),
             }),
             commodity_prices=None if dp_c is None else pd.DataFrame({
                 "code": list(dp_c.index),
                 "description": list(self.sq.commodity_labels.loc[dp_c.index]),
-                "pct_change": dp_c.to_numpy(),
+                "price_change": dp_c.to_numpy(),
             }),
             pce_prices=pce_prices,
             burden_by_final_demand=pd.DataFrame({
@@ -220,8 +256,8 @@ class PriceModel:
         `margins` holds the "transport", "wholesale" and "retail" price changes.
         A bridge commodity not in `dp_c` gets dp_c = 0 (one note per code); a line
         whose purchasers' value sums to 0 gets 0 (one note per line). The frame has
-        columns nipa_line, pce_category, pct_change, base_spending (the line's
-        purchasers' value) and burden (pct_change x base_spending), sorted by line
+        columns nipa_line, pce_category, price_change, base_spending (the line's
+        purchasers' value) and burden (price_change x base_spending), sorted by line
         number when every line is a number and as text otherwise.
         """
         rows = self.pce_bridge.rows
@@ -242,13 +278,13 @@ class PriceModel:
         for line in lines.index[zero]:
             notes.append(f"NIPA line {line} ({lines.loc[line, 'pce_category']}) has no purchasers' value; "
                          "its price change is set to 0")
-        pct_change = (added / spending.where(~zero, 1.0)).where(~zero, 0.0)
+        price_change = (added / spending.where(~zero, 1.0)).where(~zero, 0.0)
         frame = pd.DataFrame({
             "nipa_line": list(lines.index),
             "pce_category": lines["pce_category"].to_numpy(),
-            "pct_change": pct_change.to_numpy(),
+            "price_change": price_change.to_numpy(),
             "base_spending": spending.to_numpy(),
-            "burden": (pct_change * spending).to_numpy(),
+            "burden": (price_change * spending).to_numpy(),
         })
         numeric = frame["nipa_line"].str.fullmatch("[0-9]+").all()
         frame = frame.sort_values("nipa_line", key=(lambda s: s.astype(int)) if numeric else None, kind="stable")
@@ -276,10 +312,10 @@ class PriceModel:
                 dollar_shocks.append(shock)
         dollars = industry_dollars(dollar_shocks, self.sq)
         sales = self.sq.Z.loc[t.index, t.index].sum(axis=1)
-        stranded = (sales == 0) & (dollars != 0)
+        stranded = (sales == 0) & ((dollars != 0) | (t != 0))
         if stranded.any():
-            raise ValueError(f"formulation 'wp6' spreads dollars over intermediate sales, and these "
-                             f"industries have none: {list(stranded.index[stranded])}")
+            raise ValueError(f"formulation 'wp6' levies an industry's tax (dollars or rate) on its intermediate "
+                             f"sales, and these industries have none: {list(stranded.index[stranded])}")
         live = sales != 0
         t.loc[live] += dollars[live] / sales[live]
         p_hat = self._solve(self.A.mul(1 + t, axis=0), self.v)
@@ -287,7 +323,10 @@ class PriceModel:
 
     @staticmethod
     def _solve(A_hat: pd.DataFrame, b: pd.Series) -> pd.Series:
-        """Solve (I - A_hat') p = b; A_hat has the same industries, in the same order, on both axes."""
+        """Solve (I - A_hat') p = b; A_hat must have the same industries, in the same order, on both axes."""
+        if list(A_hat.index) != list(A_hat.columns):
+            raise ValueError("the coefficient matrix must have the same industry codes, in the same order, "
+                             "on both axes")
         industries = A_hat.index
         p = np.linalg.solve(np.eye(len(industries)) - A_hat.to_numpy().T, b.loc[industries].to_numpy())
         return pd.Series(p, index=industries)

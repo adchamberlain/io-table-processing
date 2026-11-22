@@ -15,6 +15,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import openpyxl
 import pandas as pd
 
@@ -73,6 +74,11 @@ def _text(x) -> str:
     return "" if x is None else str(x).strip()
 
 
+def _is_blank(x) -> bool:
+    """An empty cell: None, or a string of whitespace only."""
+    return x is None or (isinstance(x, str) and not x.strip())
+
+
 def _unique(codes: list[str], axis: str, sheet: str) -> None:
     dupes = sorted({c for c in codes if codes.count(c) > 1})
     if dupes:
@@ -88,6 +94,10 @@ def read_bea_grid(path: Path, sheet: str) -> BeaGrid:
     codes, and the scan stops at the first column with neither code nor
     description). Data rows follow the "Code" row until the first row whose
     columns A and B are both empty. The title is cell A1.
+
+    Blank data cells (empty, or whitespace only) become 0.0. Any other cell
+    that is not a number, such as BEA's "(D)" for a suppressed value, raises
+    ValueError naming the sheet, its row and column codes and its text.
     """
     with closing(openpyxl.load_workbook(path, read_only=True, data_only=True)) as wb:
         ws = wb[sheet]
@@ -137,12 +147,17 @@ def read_bea_grid(path: Path, sheet: str) -> BeaGrid:
     _unique(col_codes, "column", sheet)
     _unique(row_codes, "row", sheet)
 
-    values = (
-        pd.DataFrame(data, index=row_codes, columns=col_codes, dtype=object)
-        .apply(pd.to_numeric, errors="coerce")
-        .fillna(0.0)
-        .astype(float)
-    )
+    cells = pd.DataFrame(data, index=row_codes, columns=col_codes, dtype=object)
+    numeric = cells.apply(pd.to_numeric, errors="coerce")
+    blank = np.array([[_is_blank(x) for x in row] for row in cells.to_numpy()], dtype=bool).reshape(cells.shape)
+    bad = np.argwhere(numeric.isna().to_numpy() & ~blank)
+    if len(bad):
+        i, j = bad[0]  # the first in row-major order
+        raise ValueError(
+            f"sheet {sheet!r}: row {row_codes[i]!r}, column {col_codes[j]!r} is not a number: "
+            f"{cells.iat[i, j]!r} ({len(bad)} such cells in all)"
+        )
+    values = numeric.fillna(0.0).astype(float)
     return BeaGrid(
         values=values,
         row_labels=pd.Series(row_descs, index=row_codes, dtype=object),
@@ -307,7 +322,9 @@ def load_bea_tables(
 
     Files land in `data_dir / "bea"`. Each table's `meta` gains `level`,
     `redefinitions` and `provenance` (the download sidecar: url, sha256,
-    bytes, downloaded_at); `year` is the resolved integer year.
+    bytes, downloaded_at); `year` is the resolved integer year. Raises
+    ValueError when the make and use years resolve differently (with
+    "latest", when the two workbooks' newest year sheets differ).
     """
     if level != "detail":
         raise NotImplementedError("summary level arrives in Phase 2")
@@ -323,4 +340,6 @@ def load_bea_tables(
         )
         tables.append(table)
     make, use = tables
+    if make.meta["year"] != use.meta["year"]:
+        raise ValueError(f"the make table is for {make.meta['year']} but the use table for {use.meta['year']}")
     return make, use
