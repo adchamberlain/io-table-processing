@@ -98,3 +98,29 @@ def add_make_column(make, code, values):
                         pd.concat([make.commodity_output, pd.Series([column.sum()], index=[code])]))
     return dataclasses.replace(make, values=new_values, commodity_labels=labels,
                                industry_output=industry_output, commodity_output=commodity_output)
+
+
+def grid_from_csv(values_path: Path, labels_path: Path | None) -> parse.BeaGrid:
+    """A BeaGrid from a fixture CSV (codes as index and headers, first header "code"; ".gz" = gzip;
+    ValueError for a blank cell).
+
+    `labels_path` is a CSV with columns code,description listing the row codes in table order,
+    then the column codes in table order (a code on both axes, like industry and commodity 1110,
+    has one entry per axis); ValueError if its codes are not exactly those. None labels every
+    code with itself. Skips the calling test when a fixture file is missing (the 2002 fixtures
+    come from scripts/extract_2002_fixtures.py)."""
+    values_path = Path(values_path)
+    for p in (values_path, labels_path):
+        if p is not None and not Path(p).exists(): pytest.skip(f"fixture {Path(p).name} missing")
+    values = pd.read_csv(values_path, index_col=0, dtype={"code": str}).astype(float)
+    if values.isna().to_numpy().any(): raise ValueError(f"{values_path.name}: blank or non-numeric cells")
+    if labels_path is None:
+        row_labels, col_labels = pd.Series(values.index, index=values.index), pd.Series(values.columns, index=values.columns)
+    else:
+        labels = pd.read_csv(labels_path, dtype=str, keep_default_na=False)
+        if list(labels["code"]) != [*values.index, *values.columns]:
+            raise ValueError(f"{Path(labels_path).name}: codes are not {values_path.name}'s row codes then its column codes")
+        n = len(values.index)
+        row_labels = pd.Series(list(labels["description"][:n]), index=values.index, dtype=object)
+        col_labels = pd.Series(list(labels["description"][n:]), index=values.columns, dtype=object)
+    return parse.BeaGrid(values=values, row_labels=row_labels, col_labels=col_labels, title=values_path.name)
