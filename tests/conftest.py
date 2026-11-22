@@ -1,6 +1,7 @@
 # tests/conftest.py
-import openpyxl, pytest
+import openpyxl, pandas as pd, pytest
 from pathlib import Path
+from iotables import parse
 
 def write_bea_workbook(path: Path, *, sheet="2017", title="Make Table, After Redefinitions, 2017",
                        row_label="Industry Description", col_codes=None, col_descs=None, rows=None,
@@ -21,3 +22,53 @@ def write_bea_workbook(path: Path, *, sheet="2017", title="Make Table, After Red
         r += 1
     if trailing_note: ws.cell(r + 1, 1, "Note. Detail may not add to total due to rounding.")
     wb.save(path)
+
+
+# Toy tables from BEA's Concepts and Methods manual (tables 12.5 and 12.7), spec section 9.
+# Industries and commodities A, B, C plus scrap S00401; one final-demand column F01000.
+
+@pytest.fixture
+def toy_make_grid():
+    """The toy make table as a BeaGrid: 3 industries x (3 commodities + scrap), with T008 and T007 totals."""
+    values = pd.DataFrame(
+        [[300, 25, 0, 3, 328],
+         [30, 360, 20, 2, 412],
+         [0, 15, 250, 0, 265],
+         [330, 400, 270, 5, 0]],
+        index=["A", "B", "C", "T007"], columns=["A", "B", "C", "S00401", "T008"], dtype=float)
+    return parse.BeaGrid(
+        values=values,
+        row_labels=pd.Series(["Industry A", "Industry B", "Industry C", "Total Commodity Output"], index=values.index),
+        col_labels=pd.Series(["Commodity A", "Commodity B", "Commodity C", "Scrap", "Total Industry Output"], index=values.columns),
+        title="Make Table, Toy Economy")
+
+@pytest.fixture
+def toy_use_grid():
+    """The toy use table as a BeaGrid: commodity rows, value-added rows and T008 total over industry, final-demand and T007 columns."""
+    values = pd.DataFrame(
+        [[50, 120, 120, 40, 330],
+         [180, 30, 60, 130, 400],
+         [50, 150, 50, 20, 270],
+         [1, 3, 1, 0, 5],
+         [0, 0, 0, 0, 0],
+         [0, 0, 0, 0, 0],
+         [47, 109, 34, 0, 0],
+         [328, 412, 265, 0, 0]],
+        index=["A", "B", "C", "S00401", "V00100", "V00200", "V00300", "T008"],
+        columns=["A", "B", "C", "F01000", "T007"], dtype=float)
+    return parse.BeaGrid(
+        values=values,
+        row_labels=pd.Series(["Commodity A", "Commodity B", "Commodity C", "Scrap", "Compensation of employees",
+                              "Taxes on production and imports, less subsidies", "Gross operating surplus",
+                              "Total Industry Output"], index=values.index),
+        col_labels=pd.Series(["Industry A", "Industry B", "Industry C", "Personal consumption expenditures",
+                              "Total Commodity Output"], index=values.columns),
+        title="Use Table, Toy Economy")
+
+@pytest.fixture
+def toy_make(toy_make_grid):
+    return parse.MakeTable.from_grid(toy_make_grid)
+
+@pytest.fixture
+def toy_use(toy_use_grid):
+    return parse.UseTable.from_grid(toy_use_grid)

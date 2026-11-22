@@ -2,9 +2,12 @@
 
 `read_bea_grid` finds the header by content (the row whose column A is "Code"),
 never by fixed offsets, and aligns everything by BEA code, never by position.
-Interpreting a grid as a make or use table is done by later steps.
+`MakeTable.from_grid` and `UseTable.from_grid` then split a grid into data and
+totals by code prefix (T0... totals, F... final demand, V001-V003 value added),
+and `load_bea_tables` downloads, reads and splits the make and use workbooks.
 """
 
+import json
 import math
 import numbers
 import re
@@ -14,6 +17,9 @@ from pathlib import Path
 
 import openpyxl
 import pandas as pd
+
+from iotables import download
+from iotables.sources import RAW_DIR, bea_detail_url
 
 # Codes synthesized for header cells whose code cell is empty but whose
 # description matches (BEA leaves these columns uncoded).
@@ -150,3 +156,170 @@ def list_year_sheets(path: Path) -> list[int]:
     with closing(openpyxl.load_workbook(path, read_only=True, data_only=True)) as wb:
         names = wb.sheetnames
     return sorted(int(n) for n in names if re.fullmatch(r"[0-9]{4}", n))
+
+
+_VALUE_ADDED_CODES = ("V00100", "V00200", "V00300")
+
+
+@dataclass
+class MakeTable:
+    """BEA make table: what each industry produces, by commodity ($ millions).
+
+    `values` is industries x commodities. `industry_output` is BEA's T008
+    column (over industries) and `commodity_output` its T007 row (over
+    commodities); either is None when the grid lacks that total.
+    """
+
+    values: pd.DataFrame
+    industry_labels: pd.Series
+    commodity_labels: pd.Series
+    industry_output: pd.Series | None
+    commodity_output: pd.Series | None
+    meta: dict
+
+    @classmethod
+    def from_grid(cls, grid: BeaGrid, meta: dict | None = None) -> "MakeTable":
+        """Rows and columns whose code starts with "T0" are totals; the rest is data."""
+        industries = [c for c in grid.values.index if not c.startswith("T0")]
+        commodities = [c for c in grid.values.columns if not c.startswith("T0")]
+        return cls(
+            values=grid.values.loc[industries, commodities],
+            industry_labels=grid.row_labels.loc[industries],
+            commodity_labels=grid.col_labels.loc[commodities],
+            industry_output=(
+                grid.values.loc[industries, "T008"] if "T008" in grid.values.columns else None
+            ),
+            commodity_output=(
+                grid.values.loc["T007", commodities] if "T007" in grid.values.index else None
+            ),
+            meta=dict(meta or {}),
+        )
+
+    @property
+    def industries(self) -> list[str]:
+        return list(self.values.index)
+
+    @property
+    def commodities(self) -> list[str]:
+        return list(self.values.columns)
+
+
+@dataclass
+class UseTable:
+    """BEA use table: what each industry and final-demand category buys ($ millions).
+
+    `intermediate` is commodities x industries, `final_demand` commodities x
+    F-codes, `value_added` the rows V00100, V00200, V00300 x industries.
+    `industry_output` is BEA's T008 row (over industries) and
+    `commodity_output` its T007 column (over commodities); either is None when
+    the grid lacks that total.
+    """
+
+    intermediate: pd.DataFrame
+    final_demand: pd.DataFrame
+    value_added: pd.DataFrame
+    commodity_labels: pd.Series
+    industry_labels: pd.Series
+    final_demand_labels: pd.Series
+    industry_output: pd.Series | None
+    commodity_output: pd.Series | None
+    meta: dict
+
+    @classmethod
+    def from_grid(cls, grid: BeaGrid, meta: dict | None = None) -> "UseTable":
+        """Split a use grid by code, never by position.
+
+        Rows: V00100, V00200 and V00300 are value added (all three required),
+        codes starting "T0" are totals, the rest are commodities. Columns:
+        codes starting "F" are final demand, "T0" totals, the rest industries.
+        """
+        values = grid.values
+        missing = [c for c in _VALUE_ADDED_CODES if c not in values.index]
+        if missing:
+            raise ValueError(f"use table has no value-added rows {missing}")
+        commodities = [
+            c for c in values.index if c not in _VALUE_ADDED_CODES and not c.startswith("T0")
+        ]
+        final_demand = [c for c in values.columns if c.startswith("F")]
+        industries = [c for c in values.columns if not c.startswith(("F", "T0"))]
+        return cls(
+            intermediate=values.loc[commodities, industries],
+            final_demand=values.loc[commodities, final_demand],
+            value_added=values.loc[list(_VALUE_ADDED_CODES), industries],
+            commodity_labels=grid.row_labels.loc[commodities],
+            industry_labels=grid.col_labels.loc[industries],
+            final_demand_labels=grid.col_labels.loc[final_demand],
+            industry_output=values.loc["T008", industries] if "T008" in values.index else None,
+            commodity_output=(
+                values.loc[commodities, "T007"] if "T007" in values.columns else None
+            ),
+            meta=dict(meta or {}),
+        )
+
+    @property
+    def industries(self) -> list[str]:
+        return list(self.intermediate.columns)
+
+    @property
+    def commodities(self) -> list[str]:
+        return list(self.intermediate.index)
+
+
+def _read_year_sheet(path: Path, year: int | str) -> tuple[BeaGrid, dict]:
+    """Read the sheet for `year` ("latest" = the newest year sheet) and its meta."""
+    years = list_year_sheets(path)
+    if year == "latest":
+        if not years:
+            raise ValueError(f"{path}: no year sheets (4-digit sheet names) found")
+        year = max(years)
+    else:
+        try:
+            year = int(year)
+        except (TypeError, ValueError):
+            raise ValueError(f"year must be an integer or 'latest', got {year!r}") from None
+        if year not in years:
+            raise ValueError(f"{path}: no sheet for year {year}; available years: {years}")
+    grid = read_bea_grid(path, str(year))
+    meta = {"path": str(path), "sheet": str(year), "year": year, "title": grid.title}
+    return grid, meta
+
+
+def parse_make(path: Path, year: int | str = "latest") -> MakeTable:
+    """Read the make table for `year` ("latest" = the newest year sheet)."""
+    grid, meta = _read_year_sheet(Path(path), year)
+    return MakeTable.from_grid(grid, meta)
+
+
+def parse_use(path: Path, year: int | str = "latest") -> UseTable:
+    """Read the use table for `year` ("latest" = the newest year sheet)."""
+    grid, meta = _read_year_sheet(Path(path), year)
+    return UseTable.from_grid(grid, meta)
+
+
+def load_bea_tables(
+    level: str = "detail",
+    year: int | str = "latest",
+    redefinitions: str = "after",
+    data_dir: Path = RAW_DIR,
+    force: bool = False,
+) -> tuple[MakeTable, UseTable]:
+    """Download (cached) and parse the BEA make and use workbooks.
+
+    Files land in `data_dir / "bea"`. Each table's `meta` gains
+    `redefinitions` and `provenance` (the download sidecar: url, sha256,
+    bytes, downloaded_at).
+    """
+    if level != "detail":
+        raise NotImplementedError("summary level arrives in Phase 2")
+    bea_dir = Path(data_dir) / "bea"
+    tables = []
+    for kind, parser in (("make", parse_make), ("use", parse_use)):
+        path = download.fetch(bea_detail_url(kind, redefinitions), bea_dir, force=force)
+        table = parser(path, year)
+        table.meta["redefinitions"] = redefinitions
+        table.meta["provenance"] = json.loads(
+            path.with_name(path.name + ".provenance.json").read_text()
+        )
+        tables.append(table)
+    make, use = tables
+    return make, use
