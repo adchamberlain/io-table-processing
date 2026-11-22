@@ -108,3 +108,15 @@ def test_margin_price_changes(two_by_two):
     with pytest.raises(ValueError, match="margin_codes"):                             # level "toy" has no built-in margin codes
         leontief.PriceModel(two_by_two, pce_bridge=synthetic_bridge()).run([shocks.IndustryTax("1", rate=0.1)])
     assert bridge.MARGIN_CODES["detail"]["retail"][-1] == "4B0000"
+
+def test_table_without_commodity_output_gives_industry_prices_only(two_by_two):
+    meta = {k: v for k, v in two_by_two.meta.items() if k != "commodity_output"}
+    bare = dataclasses.replace(two_by_two, meta=meta, market_shares=two_by_two.market_shares.iloc[:, :0],
+                               N=two_by_two.N.iloc[:, :0], commodity_labels=pd.Series(dtype=object))
+    r = leontief.PriceModel(bare).run([shocks.IndustryTax("1", rate=0.1)])
+    full = leontief.PriceModel(two_by_two).run([shocks.IndustryTax("1", rate=0.1)])
+    pd.testing.assert_frame_equal(r.industry_prices, full.industry_prices)
+    pd.testing.assert_frame_equal(r.burden_by_final_demand, full.burden_by_final_demand)
+    assert r.commodity_prices is None and r.pce_prices is None and r.summary == full.summary
+    with pytest.raises(ValueError, match="commodity_output"):
+        leontief.PriceModel(bare, pce_bridge=synthetic_bridge(), margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]})

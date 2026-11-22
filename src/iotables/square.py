@@ -26,7 +26,8 @@ code, never by position.
 `SquareIOTable.to_frame` gives the table in the layout of the legacy 2002
 spreadsheets (code, description, industries, final demand, T008 total; rows:
 industries, V00100, V00200, V00300, T008); `to_excel`, `read_square_frame` and
-`to_csv` write and read it.
+`to_csv` write and read it, and `SquareIOTable.from_frame` splits it back into a
+table.
 """
 
 import datetime
@@ -125,6 +126,72 @@ class SquareIOTable:
         frame.insert(0, "Description", labels)
         return frame
 
+    @classmethod
+    def from_frame(
+        cls, frame: pd.DataFrame, meta: dict | None = None, csv_dir: Path | None = None
+    ) -> "SquareIOTable":
+        """The table in a `to_frame()` layout (as `read_square_frame` returns it), split back into its parts.
+
+        Z, F, V and y come from the frame, the industry labels from its Description
+        column. The layout holds no market shares, commodity output or column
+        descriptions; `csv_dir`, a folder `to_csv` wrote for the same table,
+        supplies them: market_shares.csv, the final-demand and commodity labels
+        from labels.csv, and meta.json, whose entries `meta` (copied) then
+        updates, with commodity_output as a Series. N is the market shares divided
+        by the industries' nonscrap ratios when meta's diagnostics record them
+        (scrap mode "bea"), else the market shares, as in `build_square_table`.
+
+        Without `csv_dir`, market_shares and N are empty (no columns),
+        commodity_labels is empty, each final-demand code is its own label and
+        meta (a copy of `meta`, default empty) has no commodity_output. Such a
+        table gives industry prices and final-demand burdens; commodity and PCE
+        prices, commodity taxes and `check_identities` need what it lacks.
+
+        Raises ValueError when the rows are not the industries then V00100,
+        V00200, V00300, T008, the columns not Description, the same industries
+        in the same order, the final-demand codes, T008, or the CSV folder's
+        market shares, labels or commodity output do not cover the frame's
+        industries, final demand and the market shares' commodities.
+        """
+        tail = [*VALUE_ADDED_LABELS, "T008"]
+        if list(frame.index[-len(tail):]) != tail or len(frame.index) == len(tail):
+            raise ValueError(f"the rows must be the industries, then {', '.join(tail)}; got {list(frame.index)}")
+        industries = list(frame.index[: -len(tail)])
+        n = len(industries)
+        columns = list(frame.columns)
+        if columns[:1] != ["Description"] or columns[-1:] != ["T008"] or columns[1 : n + 1] != industries:
+            raise ValueError(
+                "the columns must be Description, the industries in row order, the final-demand codes and T008; "
+                f"got {columns}"
+            )
+        final_demand = columns[n + 1 : -1]
+        values = frame.drop(columns="Description").astype(float)
+        y = values.loc[industries, "T008"].rename(None)
+        meta = dict(meta or {})
+        if csv_dir is None:
+            shares = pd.DataFrame(index=pd.Index(industries), dtype=float)
+            N = shares.copy()
+            final_demand_labels = pd.Series(final_demand, index=final_demand, dtype=object)
+            commodity_labels = pd.Series(dtype=object)
+        else:
+            shares, labels, stored = _read_csv_parts(Path(csv_dir), industries, final_demand)
+            final_demand_labels, commodity_labels = labels["final_demand"], labels["commodity"]
+            meta = {**stored, **meta}
+            ratio = meta.get("diagnostics", {}).get("nonscrap_ratio")
+            N = shares.copy() if ratio is None else shares.div(pd.Series(ratio, dtype=float).loc[industries], axis=0)
+        return cls(
+            Z=values.loc[industries, industries],
+            F=values.loc[industries, final_demand],
+            V=values.loc[list(VALUE_ADDED_LABELS), industries],
+            y=y,
+            N=N,
+            market_shares=shares,
+            industry_labels=frame.loc[industries, "Description"].rename(None),
+            final_demand_labels=final_demand_labels,
+            commodity_labels=commodity_labels,
+            meta=meta,
+        )
+
     def to_excel(self, path: Path, title: str | None = None) -> Path:
         """Write `to_frame()` to sheet "square" of an xlsx file; returns the path.
 
@@ -199,7 +266,8 @@ class SquareIOTable:
             "y": self.y.to_frame("y"),
             "market_shares": self.market_shares,
         }
-        paths = {name: directory / f"{name}.csv" for name in (*tables, "labels", "meta")}
+        paths = {name: directory / f"{name}.csv" for name in (*tables, "labels")}
+        paths["meta"] = directory / "meta.json"
         for name, table in tables.items():
             table.to_csv(paths[name], index_label="Code")
         labels.rename("description").reset_index().to_csv(paths["labels"], index=False)
@@ -269,6 +337,42 @@ def read_square_frame(path: Path) -> pd.DataFrame:
     frame = numeric.astype(float)
     frame.insert(0, "Description", pd.Series(descriptions, index=index, dtype=object))
     return frame
+
+
+def _read_csv_parts(
+    directory: Path, industries: list[str], final_demand: list[str]
+) -> tuple[pd.DataFrame, dict[str, pd.Series], dict]:
+    """A `to_csv` folder's market shares (rows in `industries` order), its final-demand and
+    commodity labels ({"final_demand": ..., "commodity": ...}) and its meta.json, with
+    commodity_output as a Series in market-share column order; ValueError when they do
+    not cover the given codes and the market shares' commodities."""
+    path = directory / "market_shares.csv"
+    shares = pd.read_csv(path, dtype={"Code": str}).set_index("Code").rename_axis(None).astype(float)
+    only_csv, only_table = sorted(set(shares.index) - set(industries)), sorted(set(industries) - set(shares.index))
+    if only_csv or only_table or len(shares.index) != len(industries):
+        raise ValueError(
+            f"{path}: its industries are not the table's: only in the CSV {only_csv}, only in the table {only_table}"
+        )
+    shares = shares.loc[industries]
+    commodities = list(shares.columns)
+    table = pd.read_csv(directory / "labels.csv", dtype=str, keep_default_na=False)
+    labels = {}
+    for kind, codes in (("final_demand", final_demand), ("commodity", commodities)):
+        descriptions = table.loc[table["kind"] == kind].set_index("code")["description"]
+        missing = [c for c in codes if c not in descriptions.index]
+        if missing:
+            raise ValueError(f"{directory / 'labels.csv'}: no {kind} labels for {missing}")
+        labels[kind] = descriptions.loc[codes].rename(None).rename_axis(None)
+    path = directory / "meta.json"
+    stored = json.loads(path.read_text())
+    q = pd.Series(stored.get("commodity_output", {}), dtype=float)
+    if set(q.index) != set(commodities):
+        raise ValueError(
+            f"{path}: commodity_output does not cover the market shares' commodities: "
+            f"{sorted(set(q.index) ^ set(commodities))}"
+        )
+    stored["commodity_output"] = q.loc[commodities]
+    return shares, labels, stored
 
 
 def _jsonable(obj):

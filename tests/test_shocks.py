@@ -139,3 +139,12 @@ def test_carbon_price_rejects_unsupported_coverage_and_unknown_level():
 @pytest.mark.network
 def test_eia_download_has_recent_year():
     assert shocks.eia_co2_by_fuel(2023)["coal"] == pytest.approx(776.47, abs=1.0)
+
+def test_carbon_price_passes_force_to_the_download(monkeypatch):
+    calls = []
+    def fake_fetch(url, dest_dir, *, filename=None, force=False):
+        calls.append(force)
+        return FIX / "eia_t11_01_sample.csv"
+    monkeypatch.setattr(shocks, "fetch", fake_fetch)
+    assert shocks.carbon_price(50, 2024) == shocks.carbon_price(50, 2024, force=True)
+    assert calls == [False, True]

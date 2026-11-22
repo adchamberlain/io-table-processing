@@ -194,7 +194,7 @@ def eia_co2_by_fuel(year: int, data_dir: Path = RAW_DIR, force: bool = False, pa
 
 
 def carbon_price(dollars_per_ton_co2: float, emissions_year: int, coverage: str = "upstream", level: str = "detail",
-                 data_dir: Path = RAW_DIR, path: Path | None = None) -> list[IndustryTax]:
+                 data_dir: Path = RAW_DIR, path: Path | None = None, force: bool = False) -> list[IndustryTax]:
     """A carbon price of `dollars_per_ton_co2` on `emissions_year`'s CO2, as industry taxes ($ millions).
 
     Upstream coverage taxes each fossil fuel where it is extracted: million metric
@@ -202,13 +202,13 @@ def carbon_price(dollars_per_ton_co2: float, emissions_year: int, coverage: str 
     `level`. Fuels that share an industry (oil and gas) are summed into one tax.
     Returns one `IndustryTax` per industry, sorted by code. Raises
     NotImplementedError for any other `coverage` and KeyError for an unknown `level`.
-    `data_dir` and `path` are as in `eia_co2_by_fuel`.
+    `data_dir`, `path` and `force` are as in `eia_co2_by_fuel`.
     """
     if coverage != "upstream":
         raise NotImplementedError(f"carbon_price coverage {coverage!r}: only 'upstream' is implemented")
     if level not in CARBON_INDUSTRIES:
         raise KeyError(f"no carbon-price industries for level {level!r}; have {sorted(CARBON_INDUSTRIES)}")
-    emissions = eia_co2_by_fuel(emissions_year, data_dir=data_dir, path=path)
+    emissions = eia_co2_by_fuel(emissions_year, data_dir=data_dir, force=force, path=path)
     dollars: dict[str, float] = {}
     for fuel, code in CARBON_INDUSTRIES[level].items():
         dollars[code] = dollars.get(code, 0.0) + emissions[fuel] * dollars_per_ton_co2

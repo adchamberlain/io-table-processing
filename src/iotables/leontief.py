@@ -58,7 +58,8 @@ class PriceResult:
     """The outcome of `PriceModel.run` ($ millions; price changes as fractions).
 
     `industry_prices`: columns code, description, pct_change, one row per
-    industry in table order. `commodity_prices`: columns code, description,
+    industry in table order. `commodity_prices` (None when the table has no
+    commodity output, `meta["commodity_output"]`): columns code, description,
     pct_change, one row per commodity in market-share column order.
     `pce_prices` (None without a PCE bridge): columns nipa_line, pce_category,
     pct_change, base_spending (the line's purchasers' value), burden
@@ -88,9 +89,12 @@ class PriceModel:
     With a `pce_bridge`, `run` also gives PCE price changes, which need the
     margin commodities: `margin_codes` maps "transport", "wholesale" and
     "retail" to commodity codes, and defaults to `bridge.MARGIN_CODES` for the
-    table's `meta["level"]` (None when that level has no entry). Raises
-    ValueError for an unknown formulation, an industry with zero output (its
-    coefficients are undefined) or baseline prices more than 1e-9 from 1.
+    table's `meta["level"]` (None when that level has no entry). A table
+    without `meta["commodity_output"]` (one read back without its market
+    shares, `SquareIOTable.from_frame`) gives industry prices and burdens only.
+    Raises ValueError for an unknown formulation, a bridge with such a table,
+    an industry with zero output (its coefficients are undefined) or baseline
+    prices more than 1e-9 from 1.
     """
 
     def __init__(
@@ -102,6 +106,9 @@ class PriceModel:
     ):
         if formulation not in FORMULATIONS:
             raise ValueError(f"formulation must be one of {FORMULATIONS}, got {formulation!r}")
+        if pce_bridge is not None and "commodity_output" not in sq.meta:
+            raise ValueError("PCE prices need commodity prices, and the table has no commodity output "
+                             "(meta['commodity_output']) and market shares to compute them")
         self.sq = sq
         self.pce_bridge = pce_bridge
         self.formulation = formulation
@@ -140,7 +147,7 @@ class PriceModel:
         F = self.sq.F.loc[industries]
         burden = dp @ F
         final_demand_burden = float(burden.sum())
-        dp_c = self.commodity_price_changes(dp)
+        dp_c = self.commodity_price_changes(dp) if "commodity_output" in self.sq.meta else None
         pce_prices, pce_burden, pce_share, notes = None, None, None, []
         if self.pce_bridge is not None:
             pce_prices, notes = self.pce_price_changes(dp_c, self.margin_price_changes(dp_c))
@@ -152,7 +159,7 @@ class PriceModel:
                 "description": list(self.sq.industry_labels.loc[industries]),
                 "pct_change": dp.loc[industries].to_numpy(),
             }),
-            commodity_prices=pd.DataFrame({
+            commodity_prices=None if dp_c is None else pd.DataFrame({
                 "code": list(dp_c.index),
                 "description": list(self.sq.commodity_labels.loc[dp_c.index]),
                 "pct_change": dp_c.to_numpy(),

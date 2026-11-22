@@ -267,6 +267,8 @@ def test_read_square_frame_rejects_row_without_code(tmp_path, toy_make, toy_use)
 def test_to_csv_writes_all_parts(tmp_path, toy_make, toy_use, scrap):
     paths = square.build_square_table(toy_make, toy_use, scrap=scrap).to_csv(tmp_path)
     assert set(paths) == {"square", "Z", "F", "V", "y", "market_shares", "labels", "meta"} and all(p.exists() for p in paths.values())
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["F.csv", "V.csv", "Z.csv", "labels.csv", "market_shares.csv", "meta.json",
+                                                          "square.csv", "y.csv"]
 
 
 def test_to_csv_contents(tmp_path, toy_make, toy_use):
@@ -285,3 +287,46 @@ def test_to_csv_contents(tmp_path, toy_make, toy_use):
     assert meta["diagnostics"]["scrap_mode"] == "bea"
     assert meta["diagnostics"]["nonscrap_ratio"]["A"] == pytest.approx(sq.meta["diagnostics"]["nonscrap_ratio"]["A"])
     assert meta["commodity_output"]["A"] == 330.0 and meta["source"]["make"]["year"] == 2017
+
+
+@pytest.mark.parametrize("scrap", square.SCRAP_MODES)
+def test_from_frame_with_csv_folder_recovers_the_table(tmp_path, toy_make, toy_use, scrap):
+    toy_make.meta.update(year=2017, level="detail", redefinitions="after")
+    sq = square.build_square_table(toy_make, toy_use, scrap=scrap)
+    sq.to_csv(tmp_path / "t")
+    frame = square.read_square_frame(sq.to_excel(tmp_path / "t.xlsx"))
+    back = square.SquareIOTable.from_frame(frame, {"table": "t.xlsx"}, csv_dir=tmp_path / "t")
+    for name in ("Z", "F", "V", "N", "market_shares"):
+        pd.testing.assert_frame_equal(getattr(back, name), getattr(sq, name), check_names=False, obj=name)
+    for name in ("y", "industry_labels", "final_demand_labels", "commodity_labels"):
+        pd.testing.assert_series_equal(getattr(back, name), getattr(sq, name), check_names=False, obj=name)
+    pd.testing.assert_series_equal(back.meta["commodity_output"], sq.meta["commodity_output"], check_names=False)
+    assert back.meta["year"] == 2017 and back.meta["level"] == "detail" and back.meta["table"] == "t.xlsx"
+    assert back.meta["diagnostics"]["scrap_mode"] == scrap
+    assert back.check_identities() == pytest.approx(sq.check_identities(), abs=1e-9)
+
+def test_from_frame_without_csv_folder(toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea")
+    back = square.SquareIOTable.from_frame(sq.to_frame())
+    for name in ("Z", "F", "V"):
+        pd.testing.assert_frame_equal(getattr(back, name), getattr(sq, name), check_names=False, obj=name)
+    pd.testing.assert_series_equal(back.y, sq.y, check_names=False)
+    assert list(back.industry_labels) == ["Industry A", "Industry B", "Industry C"]
+    assert back.final_demand_labels.to_dict() == {"F01000": "F01000"}          # the layout has no column descriptions
+    assert back.market_shares.empty and back.N.empty and back.commodity_labels.empty
+    assert list(back.market_shares.index) == sq.industries and back.meta == {}
+
+def test_from_frame_rejects_other_layouts(tmp_path, toy_make, toy_use, two_by_two):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea")
+    f = sq.to_frame()
+    with pytest.raises(ValueError, match="V00100, V00200, V00300, T008"):
+        square.SquareIOTable.from_frame(f.drop(index="V00200"))
+    with pytest.raises(ValueError, match="T008"):
+        square.SquareIOTable.from_frame(f.drop(columns="T008"))
+    with pytest.raises(ValueError, match="Description"):
+        square.SquareIOTable.from_frame(f.drop(columns="Description"))
+    with pytest.raises(ValueError, match="industries"):
+        square.SquareIOTable.from_frame(f[["Description", "B", "A", "C", "F01000", "T008"]])
+    two_by_two.to_csv(tmp_path / "other")                                       # a CSV folder for another table
+    with pytest.raises(ValueError, match="industries"):
+        square.SquareIOTable.from_frame(f, csv_dir=tmp_path / "other")

@@ -219,3 +219,199 @@ def test_build_cli_rejects_make_and_use_for_different_years(tmp_path, toy_workbo
     err = capsys.readouterr().err
     assert rc == 2 and "2017" in err and "2012" in err
     assert not (tmp_path / "out").exists()
+
+
+# --- iotables run -----------------------------------------------------------------
+
+import json, shutil
+from iotables import bridge, leontief, shocks
+
+RESULT_FILES = ["industry_prices.csv", "commodity_prices.csv", "pce_prices.csv", "burden_by_final_demand.csv",
+                "summary.json", "shocks.json"]
+TOY_MARGINS = {"transport": ["B"], "wholesale": ["B"], "retail": ["C"]}
+
+def test_parse_shock_spec():
+    assert cli.parse_shock_spec("industry:211000:dollars=50000") == shocks.IndustryTax("211000", dollars=50000.0)
+    assert cli.parse_shock_spec("flow:221100:331110:rate=0.1") == shocks.FlowTax("221100", "331110", 0.1)
+    assert cli.parse_shock_spec("va:V00100:rate=0.01:industries=1,2") == shocks.ValueAddedTax("V00100", 0.01, ("1", "2"))
+    with pytest.raises(SystemExit):
+        cli.parse_shock_spec("industry:211000")
+
+def test_parse_shock_spec_other_forms():
+    assert cli.parse_shock_spec("industry:211000:rate=0.02") == shocks.IndustryTax("211000", rate=0.02)
+    assert cli.parse_shock_spec("commodity:324110:rate=0.05") == shocks.CommodityTax("324110", rate=0.05)
+    assert cli.parse_shock_spec("commodity:324110:dollars=-1e3") == shocks.CommodityTax("324110", dollars=-1000.0)
+    assert cli.parse_shock_spec("va:V00100:rate=0.01") == shocks.ValueAddedTax("V00100", 0.01)
+
+@pytest.mark.parametrize("spec", [
+    "industry:211000", "industry:211000:rate=abc", "industry::rate=0.1", "industry:211000:share=0.1",
+    "industry:211000:rate=nan", "industry:211000:dollars=inf", "industry:211000:rate=0.1:extra", "tariff:211000:rate=0.1",
+    "flow:221100:rate=0.1", "flow:221100:331110:dollars=5", "va:V00100:dollars=5", "va:V00100:rate=0.01:industries=",
+    "va:V00100:rate=0.01:industries=1,,2", "va:V00100:rate=0.01:sectors=1", "",
+])
+def test_parse_shock_spec_rejects_bad_specs_with_the_grammar(spec, capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.parse_shock_spec(spec)
+    err = capsys.readouterr().err
+    assert e.value.code == 2 and err.startswith("iotables: error:") and repr(spec) in err
+    assert cli.SHOCK_GRAMMAR in err and "industry:CODE:dollars=X" in cli.SHOCK_GRAMMAR
+
+def test_run_cli_on_toy(tmp_path, toy_workbooks):
+    make_p, use_p = toy_workbooks
+    rc = cli.main(["run", "--make", str(make_p), "--use", str(use_p), "--year", "2017", "--no-pce",
+                   "--shock", "industry:A:rate=0.1", "--out", str(tmp_path)])
+    assert rc == 0 and (tmp_path / "industry_prices.csv").exists() and json.loads((tmp_path / "summary.json").read_text())["total_tax"] > 0
+
+@pytest.fixture
+def toy_bridge(monkeypatch):
+    """bridge.load_pce_bridge returns a PCE bridge over the toy commodities (plus scrap S00401, which mode "bea"
+    removes from the table), and the detail-level margin codes become the toy's B and C; the calls are recorded."""
+    rows = pd.DataFrame([["1", "Line one", "A", "Commodity A", 80.0, 5.0, 5.0, 10.0, 100.0],
+                         ["2", "Line two", "B", "Commodity B", 50.0, 0.0, 0.0, 0.0, 50.0],
+                         ["2", "Line two", "S00401", "Scrap", -5.0, 0.0, 0.0, 0.0, -5.0],
+                         ["10", "Line ten", "C", "Commodity C", 30.0, 0.0, 0.0, 10.0, 40.0]], columns=bridge.COLUMNS)
+    calls = []
+    def fake_load(level="detail", year="latest", data_dir=sources.RAW_DIR, force=False):
+        calls.append((level, year, force))
+        return bridge.PCEBridge(rows=rows.copy(), year=2017, meta={})
+    monkeypatch.setattr(bridge, "load_pce_bridge", fake_load)
+    monkeypatch.setitem(bridge.MARGIN_CODES, "detail", TOY_MARGINS)
+    return calls
+
+def _read_results(directory):
+    """The run's four CSVs (codes as text) and its two JSON files, by file name."""
+    frames = {name: pd.read_csv(directory / name, dtype={"code": str, "nipa_line": str}) for name in RESULT_FILES[:4]}
+    return {**frames, **{name: json.loads((directory / name).read_text()) for name in RESULT_FILES[4:]}}
+
+def _expected_toy_run(make_p, use_p, run_shocks, **model_options):
+    sq = square.build_square_table(parse.parse_make(make_p), parse.parse_use(use_p))
+    return leontief.PriceModel(sq, margin_codes=TOY_MARGINS, **model_options).run(run_shocks)
+
+def test_run_cli_writes_results_and_prints_largest_pce_increases(tmp_path, toy_workbooks, toy_bridge, capsys):
+    make_p, use_p = toy_workbooks
+    out_dir = tmp_path / "out"
+    rc = cli.main(["run", "--make", str(make_p), "--use", str(use_p), "--shock", "industry:A:rate=0.1",
+                   "--shock", "commodity:B:dollars=5", "--out", str(out_dir)])
+    out = capsys.readouterr().out
+    assert rc == 0 and toy_bridge == [("detail", 2017, False)]               # the bridge for the table's year
+    run_shocks = [shocks.IndustryTax("A", rate=0.1), shocks.CommodityTax("B", dollars=5.0)]
+    expected = _expected_toy_run(make_p, use_p, run_shocks, pce_bridge=bridge.load_pce_bridge())
+    got = _read_results(out_dir)
+    for name in ("industry_prices", "commodity_prices", "pce_prices", "burden_by_final_demand"):
+        pd.testing.assert_frame_equal(got[f"{name}.csv"], getattr(expected, name), check_dtype=False)
+    summary = got["summary.json"]
+    assert summary["formulation"] == "output_tax"
+    for key in ("total_tax", "final_demand_burden", "identity_residual", "pce_burden", "pce_share_of_burden"):
+        assert summary[key] == pytest.approx(expected.summary[key], rel=1e-12, abs=1e-12)
+    assert summary["table"] == {"year": 2017, "level": "detail", "redefinitions": "after", "scrap_mode": "bea",
+                                "scrap_codes": ["S00401", "S00402"]}
+    assert summary["carbon"] is None and any("S00401" in note for note in summary["notes"])
+    assert got["shocks.json"] == [{"type": "IndustryTax", "code": "A", "dollars": None, "rate": 0.1},
+                                  {"type": "CommodityTax", "code": "B", "dollars": 5.0, "rate": None}]
+    assert (out_dir / "us_io_2017_detail_after_bea.xlsx").exists()             # run builds (and writes) the table like build
+    assert [line.split()[0] for line in _section(out, "Shocks")] == ["industry:A:rate=0.1", "commodity:B:dollars=5.0"]
+    assert float(_line_with(out, "total_tax").split()[-1].replace(",", "")) == pytest.approx(expected.summary["total_tax"], abs=1e-3)
+    assert f"{expected.summary['pce_share_of_burden']:.4f}" in _line_with(out, "pce_share_of_burden")
+    lines = _section(out, "largest price increases")
+    assert lines[0].split() == ["line", "change", "base", "spending", "burden", "category"]
+    pce = expected.pce_prices.sort_values("pct_change", ascending=False)
+    assert [line.split()[0] for line in lines[1:]] == list(pce["nipa_line"])
+    top = pce.iloc[0]
+    assert lines[1].split() == [top["nipa_line"], f"{top['pct_change']:.3%}", f"{top['base_spending']:,.1f}",
+                                f"{top['burden']:,.1f}", *top["pce_category"].split()]
+    assert any("S00401" in line for line in _section(out, "Notes"))
+    assert [line.split(None, 1)[1] for line in _section(out, "Wrote results")] == [str(out_dir / n) for n in RESULT_FILES]
+    assert out.index("Identity residuals") < out.index("Shocks") < out.index("Price model summary") \
+        < out.index("largest price increases") < out.index("Notes") < out.index("Wrote results")
+
+def test_run_cli_carbon_preset_and_wp6(tmp_path, toy_workbooks, monkeypatch, capsys):
+    make_p, use_p = toy_workbooks
+    calls = []
+    def fake_carbon(dollars_per_ton_co2, emissions_year, coverage="upstream", level="detail", data_dir=sources.RAW_DIR,
+                    path=None, force=False):
+        calls.append((dollars_per_ton_co2, emissions_year, level, force))
+        return [shocks.IndustryTax("C", dollars=2.5 * dollars_per_ton_co2)]
+    monkeypatch.setattr(shocks, "carbon_price", fake_carbon)
+    rc = cli.main(["run", "--make", str(make_p), "--use", str(use_p), "--carbon", "4", "--emissions-year", "2024",
+                   "--shock", "industry:A:dollars=1", "--formulation", "wp6", "--no-pce", "--force", "--out", str(tmp_path)])
+    assert rc == 0 and calls == [(4.0, 2024, "detail", True)]
+    expected = _expected_toy_run(make_p, use_p, [shocks.IndustryTax("A", dollars=1.0), shocks.IndustryTax("C", dollars=10.0)],
+                                 formulation="wp6")
+    got = _read_results(tmp_path)
+    pd.testing.assert_frame_equal(got["industry_prices.csv"], expected.industry_prices, check_dtype=False)
+    assert got["summary.json"]["formulation"] == "wp6" and got["summary.json"]["pce_burden"] is None
+    assert got["summary.json"]["carbon"] == {"dollars_per_ton_co2": 4.0, "emissions_year": 2024, "coverage": "upstream"}
+    assert [s["code"] for s in got["shocks.json"]] == ["A", "C"]
+    assert got["pce_prices.csv"].empty and list(got["pce_prices.csv"].columns) == ["nipa_line", "pce_category", "pct_change",
+                                                                                 "base_spending", "burden"]
+    assert "largest price increases" not in capsys.readouterr().out
+
+def test_run_cli_reads_a_built_table_with_its_csv_folder(tmp_path, toy_workbooks, toy_bridge, capsys):
+    make_p, use_p = toy_workbooks
+    shock_args = ["--shock", "industry:A:rate=0.1", "--shock", "commodity:B:dollars=5"]
+    assert cli.main(["run", "--make", str(make_p), "--use", str(use_p), *shock_args, "--out", str(tmp_path / "direct")]) == 0
+    table = tmp_path / "direct" / "us_io_2017_detail_after_bea.xlsx"
+    capsys.readouterr()
+    assert cli.main(["run", "--table", str(table), *shock_args, "--out", str(tmp_path / "again")]) == 0
+    out = capsys.readouterr().out
+    assert toy_bridge == [("detail", 2017, False)] * 2
+    assert "row_minus_col" in out and str(table) in out and "Notes" in out
+    direct, again = _read_results(tmp_path / "direct"), _read_results(tmp_path / "again")
+    for name in RESULT_FILES[:4]:
+        pd.testing.assert_frame_equal(again[name], direct[name], rtol=1e-12)
+    for key in ("total_tax", "final_demand_burden", "pce_burden", "pce_share_of_burden"):
+        assert again["summary.json"][key] == pytest.approx(direct["summary.json"][key], rel=1e-12)
+    assert again["summary.json"]["table"] == {"year": 2017, "level": "detail", "redefinitions": "after",
+                                              "scrap_mode": "bea", "path": str(table)}
+    assert again["shocks.json"] == direct["shocks.json"]
+    assert not (tmp_path / "again" / "us_io_2017_detail_after_bea.xlsx").exists()   # --table does not rebuild
+
+def test_run_cli_on_a_table_without_its_csv_folder(tmp_path, toy_workbooks, toy_bridge, capsys):
+    make_p, use_p = toy_workbooks
+    assert cli.main(["build", "--make", str(make_p), "--use", str(use_p), "--out", str(tmp_path / "built")]) == 0
+    alone = tmp_path / "alone" / "table.xlsx"
+    alone.parent.mkdir()
+    shutil.copy(tmp_path / "built" / "us_io_2017_detail_after_bea.xlsx", alone)
+    capsys.readouterr()
+    rc = cli.main(["run", "--table", str(alone), "--shock", "industry:A:rate=0.1", "--out", str(tmp_path / "out")])
+    out = capsys.readouterr().out
+    assert rc == 0 and toy_bridge == []                                        # no market shares: no PCE run
+    note = " ".join(line.strip() for line in _section(out, "Notes"))
+    assert "CSV folder" in note and "industry prices and final-demand burdens only" in note
+    assert "row_minus_col" not in out and "largest price increases" not in out
+    got = _read_results(tmp_path / "out")
+    expected = _expected_toy_run(make_p, use_p, [shocks.IndustryTax("A", rate=0.1)])
+    pd.testing.assert_frame_equal(got["industry_prices.csv"], expected.industry_prices, check_dtype=False)
+    pd.testing.assert_frame_equal(got["burden_by_final_demand.csv"].drop(columns="description"),
+                                  expected.burden_by_final_demand.drop(columns="description"), check_dtype=False)
+    assert got["commodity_prices.csv"].empty and got["pce_prices.csv"].empty
+    assert got["summary.json"]["pce_burden"] is None and got["summary.json"]["notes"][0] == note
+    rc = cli.main(["run", "--table", str(alone), "--shock", "commodity:B:rate=0.1", "--out", str(tmp_path / "out2")])
+    err = capsys.readouterr().err
+    assert rc == 2 and "market shares" in err and "Traceback" not in err
+
+def test_run_cli_reports_model_errors_without_traceback(tmp_path, toy_workbooks, capsys):
+    make_p, use_p = toy_workbooks
+    rc = cli.main(["run", "--make", str(make_p), "--use", str(use_p), "--no-pce", "--shock", "industry:Q:rate=0.1",
+                   "--out", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 2 and err == "iotables: error: unknown industry code 'Q'\n"
+    assert not (tmp_path / "industry_prices.csv").exists()
+
+@pytest.mark.parametrize("argv, message", [
+    (["run"], "at least one --shock or --carbon"),
+    (["run", "--no-pce"], "at least one --shock or --carbon"),
+    (["run", "--carbon", "50"], "--carbon and --emissions-year must be given together"),
+    (["run", "--emissions-year", "2024", "--shock", "industry:A:rate=0.1"], "--carbon and --emissions-year must be given together"),
+    (["run", "--carbon", "nan", "--emissions-year", "2024"], "--carbon must be a finite number"),
+    (["run", "--formulation", "leontief", "--shock", "industry:A:rate=0.1"], "invalid choice"),
+    (["run", "--table", "t.xlsx", "--year", "2012", "--shock", "industry:A:rate=0.1"], "--table reads a built table; --year"),
+    (["run", "--table", "t.xlsx", "--scrap-codes", "S00401", "--shock", "industry:A:rate=0.1"], "--scrap-codes"),
+    (["run", "--table", "t.xlsx", "--make", "m.xlsx", "--use", "u.xlsx", "--shock", "industry:A:rate=0.1"], "--make, --use"),
+    (["run", "--table", "t.xlsx", "--shock", "industry:A:rate=0.1"], "--table: no such file: t.xlsx"),
+    (["run", "--shock", "industry:A"], "va:COMPONENT:rate=R[:industries=A,B]"),
+])
+def test_run_cli_rejects_bad_arguments(argv, message, capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.main(argv)
+    assert e.value.code == 2 and message in capsys.readouterr().err
