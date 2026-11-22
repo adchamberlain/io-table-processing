@@ -1,4 +1,5 @@
 # tests/conftest.py
+import dataclasses
 import openpyxl, pandas as pd, pytest
 from pathlib import Path
 from iotables import parse
@@ -72,3 +73,28 @@ def toy_make(toy_make_grid):
 @pytest.fixture
 def toy_use(toy_use_grid):
     return parse.UseTable.from_grid(toy_use_grid)
+
+
+def add_use_row(use, code, intermediate_values, fd):
+    """A copy of `use` with one extra commodity row `code`: `intermediate_values` over the
+    industry columns and `fd` over the final-demand columns, in table order."""
+    intermediate = pd.concat([use.intermediate, pd.DataFrame([intermediate_values], index=[code],
+                                                             columns=use.intermediate.columns, dtype=float)])
+    final_demand = pd.concat([use.final_demand, pd.DataFrame([fd], index=[code],
+                                                             columns=use.final_demand.columns, dtype=float)])
+    labels = pd.concat([use.commodity_labels, pd.Series([f"Commodity {code}"], index=[code])])
+    output = (None if use.commodity_output is None else
+              pd.concat([use.commodity_output, pd.Series([float(sum(intermediate_values) + sum(fd))], index=[code])]))
+    return dataclasses.replace(use, intermediate=intermediate, final_demand=final_demand,
+                               commodity_labels=labels, commodity_output=output)
+
+def add_make_column(make, code, values):
+    """A copy of `make` with one extra commodity column `code` (`values` over the industries, in table order)."""
+    column = pd.Series(values, index=make.values.index, dtype=float)
+    new_values = make.values.copy(); new_values[code] = column
+    labels = pd.concat([make.commodity_labels, pd.Series([f"Commodity {code}"], index=[code])])
+    industry_output = None if make.industry_output is None else make.industry_output + column
+    commodity_output = (None if make.commodity_output is None else
+                        pd.concat([make.commodity_output, pd.Series([column.sum()], index=[code])]))
+    return dataclasses.replace(make, values=new_values, commodity_labels=labels,
+                               industry_output=industry_output, commodity_output=commodity_output)
