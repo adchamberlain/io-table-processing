@@ -28,7 +28,7 @@ codes as index (header "code") and column headers, in $ millions, at full precis
 Normalizations, and nothing else: codes become stripped strings with integer-valued
 numbers as integer strings (1110.0 -> "1110"); summary codes S004 -> S00400 and
 V001/V002/V003 -> V00100/V00200/V00300; the targets' total-output row and column (the
-summary's column is mislabeled T007, the detailed one is "Total") become T008; the
+summary's column is coded T007, the detailed one is "Total") become T008; the
 summary make's all-zero "N/A" (ROW of World) row is dropped; the summary use's T005 and
 T006 rows are left out; the flat files are pivoted (duplicate pairs summed, absent pairs
 0) and the detailed make gains a zero column for each regular use commodity it lacks
