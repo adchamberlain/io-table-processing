@@ -150,6 +150,7 @@ def test_load_bea_tables_downloads_into_bea_dir_and_records_meta(tmp_path, monke
     assert make.meta["redefinitions"] == use.meta["redefinitions"] == "before"
     assert make.meta["provenance"]["url"] == sources.bea_detail_url("make", "before") and use.meta["provenance"]["sha256"] == "abc"
     assert make.meta["year"] == use.meta["year"] == 2017 and make.industries == use.industries == ["A"]
+    assert make.meta["level"] == use.meta["level"] == "detail"
 
 @pytest.mark.network
 def test_load_bea_tables_detail_2017_shapes():
@@ -161,3 +162,4 @@ def test_load_bea_tables_detail_2017_shapes():
     assert make.industries == use.industries
     assert (use.industry_output - make.industry_output).abs().max() <= 1.0
     assert use.meta["redefinitions"] == "after" and "sha256" in use.meta["provenance"]
+    assert make.meta["level"] == use.meta["level"] == "detail" and make.meta["year"] == use.meta["year"] == 2017

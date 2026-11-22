@@ -305,9 +305,9 @@ def load_bea_tables(
 ) -> tuple[MakeTable, UseTable]:
     """Download (cached) and parse the BEA make and use workbooks.
 
-    Files land in `data_dir / "bea"`. Each table's `meta` gains
+    Files land in `data_dir / "bea"`. Each table's `meta` gains `level`,
     `redefinitions` and `provenance` (the download sidecar: url, sha256,
-    bytes, downloaded_at).
+    bytes, downloaded_at); `year` is the resolved integer year.
     """
     if level != "detail":
         raise NotImplementedError("summary level arrives in Phase 2")
@@ -316,6 +316,7 @@ def load_bea_tables(
     for kind, parser in (("make", parse_make), ("use", parse_use)):
         path = download.fetch(bea_detail_url(kind, redefinitions), bea_dir, force=force)
         table = parser(path, year)
+        table.meta["level"] = level
         table.meta["redefinitions"] = redefinitions
         table.meta["provenance"] = json.loads(
             path.with_name(path.name + ".provenance.json").read_text()
