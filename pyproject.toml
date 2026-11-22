@@ -27,3 +27,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["network: needs internet; downloads to data/raw"]
