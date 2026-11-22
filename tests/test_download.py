@@ -44,8 +44,8 @@ def test_fetch_leaves_no_partial_file_on_error(tmp_path, monkeypatch):
     assert not (tmp_path / "x.xlsx").exists() and not list(tmp_path.glob("*.part"))
 
 def test_manifest_has_all_phase1_files():
-    assert sources.bea_detail_url("make", "after").endswith("IOMake_After_Redefinitions_DET.xlsx")
-    assert sources.bea_detail_url("use", "before").endswith("IOUse_Before_Redefinitions_PRO_DET.xlsx")
+    assert sources.bea_detail_url("make", "after").endswith("IOMake_After_Redefinitions_2017_Detail.xlsx")
+    assert sources.bea_detail_url("use", "before").endswith("IOUse_Before_Redefinitions_PRO_2017_Detail.xlsx")
     assert sources.bea_detail_url("pce_bridge", "any").endswith("PCEBridge_2017_DET.xlsx")
     assert sources.bea_detail_url("ixi_tr", "any").endswith("IxI_TR_2017_PRO_DET.xlsx")
     with pytest.raises(KeyError):
