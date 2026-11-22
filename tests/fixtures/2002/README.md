@@ -88,3 +88,14 @@ legacy's choices reproduces each target to floating-point precision.
 
 With those exclusions the detailed test compares 149,126 of 189,200 cells, including every
 column's redistributed scrap and used goods, and all match (max |diff| 9.3e-10).
+
+A second detailed test, `test_rebuild_2002_detailed_table_replaying_legacy_quirks`, replays
+errors 2 and 3 on the inputs, inside the test and labeled as reproducing legacy errors. It
+zeroes the four records the pivot missed, and it relabels make columns S00102, S00203 and
+S00401 with the use rows they met (S00101, S00102, S00203), so that code alignment pairs them
+the way the legacy positions did. It then runs the unchanged pipeline (`redistribute` mode) and
+compares every one of the 189,200 cells at the same tolerances (max |diff| 1.1e-8, at the
+3.0e7 grand total). Neither replay is enough on its own: without the pivot replay 66 cells
+differ, and without the MMULT replay 24,957 do. Together the two detailed tests show that
+(a) the pipeline matches the legacy table everywhere the legacy table is right, and (b) the
+only differences are those two identified legacy errors.
