@@ -309,14 +309,27 @@ redistribution inflates its apparent exposure to every other supplier by 43%.
 
 Modes:
 
-`bea` (default; BEA manual ch. 12; matches BEA's requirements tables)
+`bea` (default; BEA manual ch. 12 nonscrap-ratio method)
 - Drop S00401 and S00402 rows from U and D, and the matching make columns.
-- Nonscrap ratio per industry r_i = (g_i - scrap_i) / g_i. Market shares
+- Nonscrap ratio per industry r_i = (g_i − s_i) / g_i. Market shares
   N = M q_hat^-1 computed without the scrap column, then each row divided by r_i
   (BEA's W = (I - p_hat)^-1 D). Industry output is preserved exactly (y = g).
   Scrap and used-goods purchases leave the intermediate block and land in gross
   operating surplus; used-goods transfers in final demand are not attributed to any
   producer. Columns of N then sum to slightly more than 1; that is intended.
+- Relation to BEA's published tables (established 2026-11-22 during
+  implementation): BEA's published 2017 industry-by-industry total requirements
+  table does not apply the handbook's scrap adjustment. It keeps scrap (S00401) as
+  an ordinary commodity and removes only used and secondhand goods (S00402), on the
+  after-redefinitions tables. The pipeline reproduces that table to 7e-4 (rounding
+  in the published inputs) with `scrap="bea", scrap_codes=("S00402",)`; with the
+  default two-code treatment the largest difference is 0.116, in rows of the state
+  and local government industry, which generates 38% of scrap, against scrap-buying
+  industries (steel, secondary aluminum). The default keeps the handbook treatment
+  because scrap is a byproduct whose price is not the cost-plus price of the
+  industries that generate it, which matters for a cost-push price model; the
+  published-table convention is available by argument and is what `iotables check`
+  uses. Before-redefinitions inputs do not reproduce the published table (0.279).
 
 `redistribute` (legacy; methodology paper; needed for the 2002 detailed target)
 - For each column of U and D separately, add the column's scrap + used value to the
@@ -480,11 +493,11 @@ Regression (legacy 2002 tables, fixtures committed as CSV). Provenance, verified
   1.18510) to 1e-6.
 
 External (BEA's own table):
-- With 2017 detail inputs and `scrap="bea"`, compute (I - N @ A_U)^-1 where
-  A_U = U diag(g)^-1 and compare with `IxI_TR_2017_PRO_DET.xlsx` (published to 7
-  decimals). Run it for both after- and before-redefinitions inputs and record
-  which one BEA used; that empirical answer is logged and becomes the documented
-  default if it differs from the current default.
+- With 2017 detail inputs and the published-table convention (`scrap="bea",
+  scrap_codes=("S00402",)`, after redefinitions), compute (I - Z diag(y)^-1)^-1 and
+  compare with `IxI_TR_2017_PRO_DET.xlsx` (published to 7 decimals): max abs
+  difference below 1e-3 (observed 7e-4). Before-redefinitions inputs are run and
+  recorded as not matching, which pins the after-redefinitions default by data.
 
 Identities (always, any input): row totals = column totals; N columns sum to 1;
 baseline prices = 1; price-model burden identity (8.3).
