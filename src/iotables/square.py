@@ -13,8 +13,11 @@ design spec section 7):
 
 Before transforming, noncomparable imports and the rest-of-world adjustment
 (DROP_CODES) leave the tables, and the scrap mode decides how scrap and
-used/secondhand goods (SCRAP_CODES) are handled. Implemented so far: "keep",
-which treats them as ordinary commodities.
+used/secondhand goods (SCRAP_CODES) are handled. Implemented so far:
+"keep", which treats them as ordinary commodities, and "bea", BEA's nonscrap-ratio
+method (I-O manual ch. 12): scrap leaves the tables and each industry's market
+shares are divided by its nonscrap ratio r = (g - scrap output) / g, which keeps
+industry output at g.
 
 Industries and commodities are different code sets; everything is aligned by
 code, never by position.
@@ -101,12 +104,17 @@ def build_square_table(
     [Z | F], and V00300 balances each column. Codes in `drop` or `scrap_codes`
     that a table lacks are ignored.
 
+    Scrap mode "bea" records the nonscrap ratio (a Series by industry) and the
+    scrap purchases it drops, {code: {"intermediate": $, "final_demand": $}}, in
+    `meta["diagnostics"]` as "nonscrap_ratio" and "scrap_purchases_dropped".
+
     Industry output g (for diagnostics) is the use table's T008 row, or the
     make table's row totals when the use table has none.
 
     Raises ValueError for an unknown scrap mode, different industry sets, a
-    make commodity with no use row, or a commodity with zero make output (no
-    make column, or an all-zero one) but nonzero use.
+    make commodity with no use row, a commodity with zero make output (no
+    make column, or an all-zero one) but nonzero use, or, in mode "bea", an
+    industry with no nonscrap output (nonscrap ratio not positive).
     """
     if scrap not in SCRAP_MODES:
         raise ValueError(f"scrap must be one of {SCRAP_MODES}, got {scrap!r}")
@@ -124,14 +132,22 @@ def build_square_table(
 
     # Scrap mode (spec 7.3), step 1: which scrap and used-goods rows and columns
     # leave the tables. "keep" treats them as ordinary commodities.
-    if scrap != "keep":
+    if scrap == "redistribute":
         raise NotImplementedError(f"scrap mode {scrap!r} is not implemented yet")
+    nonscrap_ratio = None
+    if scrap == "bea":
+        nonscrap_ratio = _nonscrap_ratio(M, g, scrap_codes)
+        M, U, D, diagnostics["scrap_purchases_dropped"], _ = _remove_commodities(
+            M, U, D, scrap_codes
+        )
+        diagnostics["nonscrap_ratio"] = nonscrap_ratio
 
     M = _align_commodities(M, U, D)
     q = M.sum(axis=0)
     shares = market_shares(M)
-    # Scrap mode, step 2: N from the market shares. "keep" uses them as they are.
-    N = shares
+    # Scrap mode, step 2: N from the market shares. "keep" uses them as they are;
+    # "bea" scales each industry's row up by 1 / its nonscrap ratio.
+    N = shares if nonscrap_ratio is None else shares.div(nonscrap_ratio, axis=0)
 
     Z = N @ U  # pandas aligns N's commodity columns with U's commodity rows by code
     F = N @ D
@@ -194,6 +210,21 @@ def _remove_commodities(
         use_amounts,
         make_output,
     )
+
+
+def _nonscrap_ratio(M: pd.DataFrame, g: pd.Series, scrap_codes: Sequence[str]) -> pd.Series:
+    """Each industry's nonscrap ratio r = (g - s) / g, the share of its output that is not scrap.
+
+    s is the industry's make-table output of the `scrap_codes` columns present in
+    `M` (zero if none is). Raises ValueError for industries with r not positive:
+    zero output, or output that is all scrap, which no scaling can restore.
+    """
+    scrap_output = M[[c for c in scrap_codes if c in M.columns]].sum(axis=1)
+    ratio = (g - scrap_output) / g
+    bad = [str(i) for i in ratio.index[~(ratio > 0)]]
+    if bad:
+        raise ValueError(f"industries with no nonscrap output (nonscrap ratio not positive): {bad}")
+    return ratio
 
 
 def _align_commodities(M: pd.DataFrame, U: pd.DataFrame, D: pd.DataFrame) -> pd.DataFrame:

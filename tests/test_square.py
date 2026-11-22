@@ -1,4 +1,5 @@
 # tests/test_square.py
+import dataclasses
 import numpy as np, pandas as pd, pytest
 from iotables import square, parse
 from conftest import add_use_row, add_make_column
@@ -80,3 +81,41 @@ def test_zero_make_column_with_nonzero_use_rejected(toy_make, toy_use):
 def test_build_rejects_unknown_scrap_mode(toy_make, toy_use):
     with pytest.raises(ValueError, match="bogus"):
         square.build_square_table(toy_make, toy_use, scrap="bogus")
+
+def test_bea_mode_matches_manual_example(toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea")
+    r = sq.meta["diagnostics"]["nonscrap_ratio"]
+    assert list(r.round(3)) == [0.991, 0.995, 1.000]
+    W = sq.N
+    expected_W = pd.DataFrame([[.917, .063, .000], [.091, .904, .074], [.000, .038, .926]], index=list("ABC"), columns=list("ABC"))
+    assert np.allclose(W.values, expected_W.values, atol=5e-4)
+    assert np.allclose(sq.y.values, [328, 412, 265])                      # industry output preserved exactly
+    assert "S00401" not in sq.market_shares.columns and sq.check_identities()["row_minus_col"] < 1e-9
+    # total requirements: commodity-by-commodity (I - BW)^-1 and industry-by-commodity W(I - BW)^-1
+    B = toy_use.intermediate.drop(index="S00401").div(toy_use.industry_output, axis=1)
+    cxc = np.linalg.inv(np.eye(3) - B.values @ W.values)
+    assert np.allclose(cxc, [[2.487, 1.500, 1.778], [1.736, 2.300, 1.579], [1.292, 1.322, 2.323]], atol=2e-3)
+    ixc = W.values @ cxc
+    assert np.allclose(ixc, [[2.391, 1.521, 1.731], [1.893, 2.316, 1.763], [1.261, 1.310, 2.210]], atol=2e-3)
+    # our square table's own coefficients equal W B, so (I - A)^-1 W reproduces the same industry-by-commodity table
+    A = sq.Z.div(sq.y, axis=1)
+    assert np.allclose(np.linalg.inv(np.eye(3) - A.values) @ W.values, ixc, atol=1e-9)
+
+def test_bea_mode_records_dropped_scrap(toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea")
+    assert sq.meta["diagnostics"]["scrap_purchases_dropped"]["S00401"]["intermediate"] == 5
+
+def test_bea_mode_scrap_code_without_make_column_is_dropped(toy_make, toy_use):
+    # like the real 2017 S00402: a use row but no make column; no scrap output, still removed from U and D
+    base = square.build_square_table(toy_make, toy_use, scrap="bea")
+    sq = square.build_square_table(toy_make, add_use_row(toy_use, "S00402", [1, 0, 0], fd=[-1]), scrap="bea")
+    assert sq.meta["diagnostics"]["scrap_purchases_dropped"]["S00402"] == {"intermediate": 1.0, "final_demand": -1.0}
+    pd.testing.assert_series_equal(sq.meta["diagnostics"]["nonscrap_ratio"], base.meta["diagnostics"]["nonscrap_ratio"])
+    pd.testing.assert_frame_equal(sq.Z, base.Z)
+    assert "S00402" not in sq.commodity_labels.index
+
+def test_bea_mode_rejects_all_scrap_industry(toy_make, toy_use):
+    values = toy_make.values.copy(); values.loc["C"] = [0.0, 0.0, 0.0, 265.0]
+    make2 = dataclasses.replace(toy_make, values=values)
+    with pytest.raises(ValueError, match=r"\['C'\]"):
+        square.build_square_table(make2, toy_use, scrap="bea")
