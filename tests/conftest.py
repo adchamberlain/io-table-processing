@@ -164,3 +164,36 @@ def grid_from_csv(values_path: Path, labels_path: Path | None) -> parse.BeaGrid:
         row_labels = pd.Series(list(labels["description"][:n]), index=values.index, dtype=object)
         col_labels = pd.Series(list(labels["description"][n:]), index=values.columns, dtype=object)
     return parse.BeaGrid(values=values, row_labels=row_labels, col_labels=col_labels, title=values_path.name)
+
+
+FIX_2002 = Path(__file__).parent / "fixtures" / "2002"
+VALUE_ADDED_CODES = ["V00100", "V00200", "V00300"]
+
+def build_2002_summary() -> square.SquareIOTable:
+    """Andrew's legacy 2002 summary table (`summary_target.csv`) as a SquareIOTable, for the price-model tests.
+
+    Z, F, V and y are the legacy table's own cells (y its T008 column), so the price model is tested
+    apart from any table-construction convention. The target CSV has no descriptions, so the labels,
+    N, market shares and commodity output come from `build_square_table(make, use, scrap="keep",
+    drop=())` on the summary fixtures, whose industry and final-demand codes must be the legacy
+    table's (ValueError otherwise). Skips the calling test when a fixture file is missing.
+    """
+    target = FIX_2002 / "summary_target.csv"
+    if not target.exists(): pytest.skip(f"fixture {target.name} missing")
+    make = parse.MakeTable.from_grid(grid_from_csv(FIX_2002 / "summary_make.csv", FIX_2002 / "summary_make_labels.csv"))
+    use = parse.UseTable.from_grid(grid_from_csv(FIX_2002 / "summary_use.csv", FIX_2002 / "summary_use_labels.csv"))
+    built = square.build_square_table(make, use, scrap="keep", drop=())
+    legacy = pd.read_csv(target, index_col=0, dtype={"code": str})
+    industries = [c for c in legacy.index if c not in (*VALUE_ADDED_CODES, "T008")]
+    final_demand = [c for c in legacy.columns if c not in (*industries, "T008")]
+    if (sorted(industries) != sorted(built.industries) or sorted(final_demand) != sorted(built.F.columns)
+            or list(legacy.index[len(industries):]) != [*VALUE_ADDED_CODES, "T008"]):
+        raise ValueError(f"{target.name}: codes differ from the summary make and use fixtures'")
+    return square.SquareIOTable(
+        Z=legacy.loc[industries, industries], F=legacy.loc[industries, final_demand],
+        V=legacy.loc[VALUE_ADDED_CODES, industries], y=legacy.loc[industries, "T008"],
+        N=built.N.loc[industries], market_shares=built.market_shares.loc[industries],
+        industry_labels=built.industry_labels.loc[industries],
+        final_demand_labels=built.final_demand_labels.loc[final_demand],
+        commodity_labels=built.commodity_labels,
+        meta={"year": 2002, "level": "summary", "commodity_output": built.meta["commodity_output"]})
