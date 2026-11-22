@@ -2,12 +2,13 @@
 
 The two source papers live in this folder:
 
-- `IO_Methodology.pdf` — Chamberlain Economics (Feb 2011), "Developing Square U.S.
+- `IO_Methodology.pdf`: Chamberlain Economics (Feb 2011), "Developing Square U.S.
   Input-Output Tables from BEA Make and Use Tables". The conversion method.
-- `wp6.pdf` — Tax Foundation Working Paper No. 6 (Mar 2009), "Who Pays for Climate
+- `wp6.pdf`: Tax Foundation Working Paper No. 6 (Mar 2009), "Who Pays for Climate
   Policy?". Section V.A gives the Leontief price model the conversion feeds.
 
-External literature consulted (see DEVLOG.txt, 2026-11-22):
+External literature consulted (see the design spec,
+`docs/superpowers/specs/2026-11-22-io-pipeline-design.md`):
 
 - Horowitz & Planting, *Concepts and Methods of the U.S. Input-Output Accounts*
   (BEA, 2006/2009), ch. 12 and appendix. https://www.bea.gov/resources/methodologies/concepts-methods-io-accounts

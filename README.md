@@ -81,7 +81,12 @@ demand. The `--scrap` option (`scrap=` in Python) chooses the treatment.
   `iotables build` prints the largest gaps.
 - `keep` treats scrap and used goods as ordinary commodities, each with its own
   use-table row and make-table column. Only noncomparable imports and the
-  rest-of-world adjustment are removed.
+  rest-of-world adjustment are removed. It applies to tables in which scrap and
+  used goods have producers, for example the 2002 summary table, whose combined
+  scrap, used and secondhand goods commodity (S00400) is made by 31 industries.
+  The 2017 detail tables need `bea` or `redistribute`, because used goods
+  (S00402) have no producer there: under `keep` their purchases would have no
+  industry to fall on, and the build stops with a message saying so.
 
 BEA's published 2017 requirements tables keep scrap as an ordinary commodity and
 remove only used goods, which `iotables check` reproduces with
@@ -267,7 +272,15 @@ BEA's PCE bridge, so it differs slightly from the burden on the PCE column of
 final demand, which is in producers' prices. Bridge rows for commodities that
 are not in the table (scrap, used goods, noncomparable imports and the
 rest-of-world adjustment) get a price change of zero, and the run's notes list
-them.
+them. The two "Less:" lines of the bridge, personal remittances in kind to
+nonresidents (NIPA line 149) and expenditures in the United States by
+nonresidents (line 338), carry negative base spending by design: BEA subtracts
+them to take nonresidents' purchases out of the PCE total. Their only bridge
+commodity is the rest-of-world adjustment (S00900), which is not in the table,
+so their price change and burden are zero.
+
+The data directories `data/raw` (downloads) and `data/output` (the default
+`--out`) are relative to the directory the command runs in.
 
 ## Validation
 
@@ -347,5 +360,4 @@ src/iotables/
   cli.py        iotables build, check and run
 tests/          pytest suite and fixtures
 docs/           reference papers and the design document
-DEVLOG.txt      dated work log
 ```

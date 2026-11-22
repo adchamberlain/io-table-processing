@@ -170,13 +170,13 @@ FIX_2002 = Path(__file__).parent / "fixtures" / "2002"
 VALUE_ADDED_CODES = ["V00100", "V00200", "V00300"]
 
 def build_2002_summary() -> square.SquareIOTable:
-    """Andrew's legacy 2002 summary table (`summary_target.csv`) as a SquareIOTable, for the price-model tests.
+    """The 2002 summary-level square table (`summary_target.csv`) as a SquareIOTable, for the price-model tests.
 
-    Z, F, V and y are the legacy table's own cells (y its T008 column), so the price model is tested
-    apart from any table-construction convention. The target CSV has no descriptions, so the labels,
-    N, market shares and commodity output come from `build_square_table(make, use, scrap="keep",
-    drop=())` on the summary fixtures, whose industry and final-demand codes must be the legacy
-    table's (ValueError otherwise). Skips the calling test when a fixture file is missing.
+    Z, F, V and y are that table's own cells (y its T008 column), so the price model runs on the 2002
+    table as it stands. The target CSV has no descriptions, so the labels, N, market shares and
+    commodity output come from `build_square_table(make, use, scrap="keep", drop=())` on the summary
+    fixtures, whose industry and final-demand codes must be the 2002 table's (ValueError otherwise).
+    Skips the calling test when a fixture file is missing.
     """
     target = FIX_2002 / "summary_target.csv"
     if not target.exists(): pytest.skip(f"fixture {target.name} missing")
@@ -188,7 +188,7 @@ def build_2002_summary() -> square.SquareIOTable:
     final_demand = [c for c in legacy.columns if c not in (*industries, "T008")]
     if (sorted(industries) != sorted(built.industries) or sorted(final_demand) != sorted(built.F.columns)
             or list(legacy.index[len(industries):]) != [*VALUE_ADDED_CODES, "T008"]):
-        raise ValueError(f"{target.name}: codes differ from the summary make and use fixtures'")
+        raise ValueError(f"{target.name}: codes do not match the summary make and use fixtures'")
     return square.SquareIOTable(
         Z=legacy.loc[industries, industries], F=legacy.loc[industries, final_demand],
         V=legacy.loc[VALUE_ADDED_CODES, industries], y=legacy.loc[industries, "T008"],

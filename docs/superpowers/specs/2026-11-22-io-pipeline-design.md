@@ -74,7 +74,7 @@ By the project owner
   adds annual summary tables through the BEA API once a key exists.
 - Move entirely out of spreadsheets; pandas objects are the primary representation,
   Excel/CSV are exports.
-- Daily `DEVLOG.txt` entries.
+- Daily entries in a private working log (not in the repository).
 
 Design calls (flagged; the project owner can override)
 - Package name `iotables`, src layout, CLI `iotables`.
@@ -513,8 +513,10 @@ tests/fixtures/            toy example, 2002 summary make/use/table CSVs, 2002 d
 data/raw/                  downloads (git-ignored), data/output/ (git-ignored)
 docs/reference/            papers and literature notes
 docs/superpowers/specs/    this document
-DEVLOG.txt, README.md, pyproject.toml
+README.md, pyproject.toml
 ```
+
+Dated work notes go to a private working log (not in the repository).
 
 README gets: purpose, one-paragraph method, install, the two CLI commands, a worked
 example (carbon preset and a plain industry tax), how validation was done, citation

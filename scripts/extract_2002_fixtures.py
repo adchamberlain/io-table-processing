@@ -1,13 +1,13 @@
-"""Extract the 2002 regression fixtures (tests/fixtures/2002/) from Andrew's legacy workbooks.
+"""Extract the 2002 regression fixtures (tests/fixtures/2002/) from the original 2002 workbooks.
 
 One-time script, run by hand on 2026-11-22; never imported by the package or the tests.
 It needs pandas, openpyxl and xlrd (for the BIFF .xls summary file). xlrd is not an
 iotables dependency, so run it with an interpreter that has it, e.g. a scratch venv:
 
-    <venv>/bin/python scripts/extract_2002_fixtures.py [--source DIR] [--out DIR]
+    <venv>/bin/python scripts/extract_2002_fixtures.py --source DIR [--out DIR]
 
-Sources (read-only), under --source (default: ~/Library/CloudStorage/Dropbox/Research/
-Models and Studies (Pre-Grad School)):
+Sources (read-only): --source (required) is the directory holding the original 2002
+workbooks, at these relative file names:
   Carbon Tax Model/Data FIles/2002summary_makeuse.xls                 sheets MAKE, USE
   U.S. Input-Output Tables/2002 Summary Input-Output Table.xlsx       sheet 2002 Summary-Level
   U.S. Input-Output Tables/Supporting Files/2002 Detailed Make.xlsx   sheet Data
@@ -21,9 +21,9 @@ codes as index (header "code") and column headers, in $ millions, at full precis
                                           code,description: the row codes in table order,
                                           then the column codes in table order (a code on
                                           both axes appears once per axis)
-  summary_target.csv                      Andrew's 2002 summary-level square table
+  summary_target.csv                      the 2002 summary-level square table
   detail_make.csv.gz, detail_use.csv.gz   BEA's 2002 detailed make and use flat files, wide
-  detail_target.csv.gz                    Andrew's 2002 detailed-level square table
+  detail_target.csv.gz                    the 2002 detailed-level square table
 
 Normalizations, and nothing else: codes become stripped strings with integer-valued
 numbers as integer strings (1110.0 -> "1110"); summary codes S004 -> S00400 and
@@ -51,7 +51,6 @@ import openpyxl
 import pandas as pd
 import xlrd
 
-SOURCE = Path.home() / "Library/CloudStorage/Dropbox/Research/Models and Studies (Pre-Grad School)"
 OUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "2002"
 SUMMARY_MAKEUSE = "Carbon Tax Model/Data FIles/2002summary_makeuse.xls"
 SUMMARY_TARGET = ("U.S. Input-Output Tables/2002 Summary Input-Output Table.xlsx", "2002 Summary-Level")
@@ -154,8 +153,8 @@ def summary_make_use(path: Path) -> dict[str, tuple[pd.DataFrame, list]]:
     use_industries = [c for c in use.columns if not c.startswith(("F", "T0"))]
     check(len(final_demand) == 13 and [c for c in use.columns if c.startswith("T0")] == ["T001", "T004", "T007"],
           f"USE: final demand {final_demand}, totals {[c for c in use.columns if c.startswith('T0')]}")
-    check(set(use_commodities) == set(commodities), f"MAKE/USE commodities differ: {set(use_commodities) ^ set(commodities)}")
-    check(set(use_industries) == set(industries), f"MAKE/USE industries differ: {set(use_industries) ^ set(industries)}")
+    check(set(use_commodities) == set(commodities), f"MAKE/USE commodities do not match: {set(use_commodities) ^ set(commodities)}")
+    check(set(use_industries) == set(industries), f"MAKE/USE industries do not match: {set(use_industries) ^ set(industries)}")
     return {"make": (make, make_rows + make_cols), "use": (use, use_rows + use_cols)}
 
 
@@ -206,7 +205,7 @@ def detail_make_use(make_path: Path, use_path: Path) -> dict[str, pd.DataFrame]:
     check(len(industries) == 426 and len(make_commodities) == 424, f"make: {len(industries)} industries, {len(make_commodities)} commodities")
     check(len(use_rows) == 431 and len(use_cols) == 439, f"use: {len(use_rows)} rows, {len(use_cols)} columns")
     check(set(VALUE_ADDED) <= set(us["Commodity"]), "use: value-added rows missing")
-    check(set(use_industries) == set(industries), f"make/use industries differ: {set(use_industries) ^ set(industries)}")
+    check(set(use_industries) == set(industries), f"make/use industries do not match: {set(use_industries) ^ set(industries)}")
     make_only = set(make_commodities) - set(use_commodities)
     check(not make_only, f"make commodities with no use row: {sorted(make_only)}")
     missing = [c for c in use_commodities if c not in make_commodities and c not in SPECIAL_COMMODITIES]
@@ -220,7 +219,7 @@ def detail_make_use(make_path: Path, use_path: Path) -> dict[str, pd.DataFrame]:
     return {"make": make, "use": use}
 
 
-# --- targets (Andrew's square tables) ---------------------------------------------------
+# --- targets (the 2002 square tables) ---------------------------------------------------
 
 
 def total_code(c, desc) -> str | None:
@@ -315,7 +314,10 @@ def write_labels(labels: list[tuple[str, str]], path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--source", type=Path, default=SOURCE)
+    expected = [SUMMARY_MAKEUSE, SUMMARY_TARGET[0], DETAIL_MAKE, DETAIL_USE, DETAIL_TARGET[0]]
+    parser.add_argument("--source", type=Path, required=True,
+                        help="directory holding the original 2002 workbooks, at the relative file names: "
+                             + "; ".join(expected))
     parser.add_argument("--out", type=Path, default=OUT)
     args = parser.parse_args()
     src, out = args.source, args.out
@@ -324,7 +326,7 @@ def main() -> None:
     print("summary make and use:")
     summary = summary_make_use(src / SUMMARY_MAKEUSE)
     for kind, (values, labels) in summary.items():
-        check([c for c, _ in labels] == list(values.index) + list(values.columns), f"summary {kind}: labels misaligned")
+        check([c for c, _ in labels] == list(values.index) + list(values.columns), f"summary {kind}: labels do not match")
         write(values, out / f"summary_{kind}.csv")
         write_labels(labels, out / f"summary_{kind}_labels.csv")
     print("summary target:")
