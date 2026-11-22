@@ -221,6 +221,41 @@ def test_read_square_frame_rejects_blank_cells(tmp_path, toy_make, toy_use):
         square.read_square_frame(p)
 
 
+def test_read_square_frame_rejects_missing_sheet(tmp_path, toy_make, toy_use):
+    p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"].title = "other"; wb.save(p)
+    with pytest.raises(ValueError, match=r"no sheet 'square'.*\['other'\]"):
+        square.read_square_frame(p)
+
+
+def test_read_square_frame_names_blank_and_non_numeric_cells(tmp_path, toy_make, toy_use):
+    p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"]["D8"] = "abc"; wb.save(p)       # row B, column B
+    with pytest.raises(ValueError, match=r"row 'B', column 'B' is not a number: 'abc'"):
+        square.read_square_frame(p)
+    wb = openpyxl.load_workbook(p); wb["square"]["D8"] = None; wb.save(p)
+    with pytest.raises(ValueError, match=r"row 'B', column 'B' is blank"):
+        square.read_square_frame(p)
+
+
+def test_read_square_frame_rejects_duplicate_codes(tmp_path, toy_make, toy_use):
+    p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"]["D5"] = "A"; wb.save(p)          # second header code A
+    with pytest.raises(ValueError, match=r"duplicate column codes \['A'\]"):
+        square.read_square_frame(p)
+    p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t2.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"]["A8"] = "A"; wb.save(p)          # second row code A
+    with pytest.raises(ValueError, match=r"duplicate row codes \['A'\]"):
+        square.read_square_frame(p)
+
+
+def test_read_square_frame_rejects_table_without_data_rows(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "square"
+    ws["A5"], ws["C5"] = "Code", "A"; wb.save(tmp_path / "t.xlsx")
+    with pytest.raises(ValueError, match="0 data rows"):
+        square.read_square_frame(tmp_path / "t.xlsx")
+
+
 def test_read_square_frame_rejects_row_without_code(tmp_path, toy_make, toy_use):
     p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t.xlsx")
     wb = openpyxl.load_workbook(p); wb["square"]["A8"] = None; wb.save(p)

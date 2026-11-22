@@ -214,10 +214,14 @@ def read_square_frame(path: Path) -> pd.DataFrame:
     "code", wherever it sits: its codes run from column C to the first empty
     cell, the description row follows it, and data rows (code in column A,
     description in column B, then the values) run from there to the first row
-    with columns A and B both empty. Raises ValueError without a "Code" row or
-    when a data cell is blank or not a number.
+    with columns A and B both empty. Raises ValueError for a missing sheet "square",
+    a missing "Code" row, no columns or no data rows, a data row without a code,
+    duplicate codes along either axis, and a blank or non-numeric data cell (the
+    message names its row and column codes).
     """
     with closing(openpyxl.load_workbook(Path(path), read_only=True, data_only=True)) as wb:
+        if SHEET not in wb.sheetnames:
+            raise ValueError(f"no sheet {SHEET!r}; found {wb.sheetnames}")
         ws = wb[SHEET]
         ws.reset_dimensions()
         rows = list(ws.iter_rows(values_only=True))
@@ -245,10 +249,24 @@ def read_square_frame(path: Path) -> pd.DataFrame:
         index.append(code)
         descriptions.append(description)
         data.append(r[first : first + len(columns)])
+    if not columns or not index:
+        raise ValueError(f"sheet {SHEET!r}: the table has {len(index)} data rows and {len(columns)} columns")
+    for axis, codes in (("column", columns), ("row", index)):
+        dupes = sorted({c for c in codes if codes.count(c) > 1})
+        if dupes:
+            raise ValueError(f"sheet {SHEET!r}: duplicate {axis} codes {dupes}")
     values = pd.DataFrame(data, index=index, columns=columns, dtype=object)
-    if values.isna().any(axis=None):
-        raise ValueError(f"sheet {SHEET!r}: blank data cells in the table body")
-    frame = values.astype(float)
+    numeric = values.apply(pd.to_numeric, errors="coerce")
+    bad = np.argwhere(numeric.isna().to_numpy())
+    if len(bad):
+        i, j = bad[0]  # the first bad cell in row-major order
+        cell = values.iat[i, j]
+        problem = "blank" if cell is None else f"not a number: {cell!r}"
+        raise ValueError(
+            f"sheet {SHEET!r}: row {index[i]!r}, column {columns[j]!r} is {problem}"
+            f" ({len(bad)} bad cells in all)"
+        )
+    frame = numeric.astype(float)
     frame.insert(0, "Description", pd.Series(descriptions, index=index, dtype=object))
     return frame
 
