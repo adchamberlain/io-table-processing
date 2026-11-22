@@ -66,6 +66,22 @@ def toy_use_grid():
                               "Total Commodity Output"], index=values.columns),
         title="Use Table, Toy Economy")
 
+def write_grid_workbook(path: Path, grid: parse.BeaGrid, *, sheet="2017", row_label="Industry Description"):
+    """Write a BeaGrid with write_bea_workbook (BEA's layout, every code in the "Code" row)."""
+    write_bea_workbook(path, sheet=sheet, title=grid.title, row_label=row_label,
+                       col_codes=list(grid.values.columns), col_descs=list(grid.col_labels.loc[grid.values.columns]),
+                       rows=[(code, grid.row_labels[code], [float(v) for v in grid.values.loc[code]])
+                             for code in grid.values.index])
+
+@pytest.fixture
+def toy_workbooks(tmp_path, toy_make_grid, toy_use_grid):
+    """The toy make and use grids as BEA-layout workbooks (sheet "2017") in tmp_path/input; (make_path, use_path)."""
+    (tmp_path / "input").mkdir()
+    make_p, use_p = tmp_path / "input" / "toy_make.xlsx", tmp_path / "input" / "toy_use.xlsx"
+    write_grid_workbook(make_p, toy_make_grid, row_label="Industry Description")
+    write_grid_workbook(use_p, toy_use_grid, row_label="Commodity Description")
+    return make_p, use_p
+
 @pytest.fixture
 def toy_make(toy_make_grid):
     return parse.MakeTable.from_grid(toy_make_grid)

@@ -3,7 +3,8 @@
 `check_identities` verifies the accounting identities of a square table
 (row totals = column totals, market shares sum to 1, y = row sums) and raises
 when any residual exceeds the tolerance. `compare_tables` lists the cells
-where two code-labeled tables disagree.
+where two code-labeled tables disagree. `ixi_total_requirements` gives the
+industry-by-industry total requirements (I - A)^-1 that BEA publishes.
 """
 
 from __future__ import annotations
@@ -81,3 +82,31 @@ def compare_tables(
             "diff": av[rows, cols] - bv[rows, cols],
         }
     )
+
+
+def ixi_total_requirements(sq: SquareIOTable) -> pd.DataFrame:
+    """Industry-by-industry total requirements (I - A)^-1, A = Z diag(y)^-1.
+
+    A_ij = Z_ij / y_j is industry i's sales to industry j per dollar of j's
+    output; cell (i, j) of the result is the output of industry i needed per
+    dollar of final demand for industry j's output, the layout of BEA's IxI
+    total requirements table. Rows and columns carry the industry codes in
+    `sq.Z`'s row order; Z's columns and y are aligned to them by code.
+
+    Raises ValueError when Z's row and column codes differ or an industry has
+    zero output; numpy.linalg.LinAlgError (a ValueError) when I - A is singular.
+    """
+    industries = sq.Z.index
+    if set(sq.Z.columns) != set(industries) or len(sq.Z.columns) != len(industries):
+        raise ValueError(
+            "Z must have the same industry codes on both axes: "
+            f"only in rows {sorted(set(industries) - set(sq.Z.columns))}, "
+            f"only in columns {sorted(set(sq.Z.columns) - set(industries))}"
+        )
+    y = sq.y.reindex(industries)
+    no_output = [str(c) for c in industries[~(y.abs() > 0)]]
+    if no_output:
+        raise ValueError(f"industries with zero or missing output y: {no_output}")
+    A = sq.Z.loc[industries, industries].to_numpy(dtype=float) / y.to_numpy(dtype=float)
+    L = np.linalg.inv(np.eye(len(industries)) - A)
+    return pd.DataFrame(L, index=industries.copy(), columns=industries.copy())

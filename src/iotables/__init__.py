@@ -11,3 +11,8 @@ Status: scaffolding only. Design doc lives in docs/superpowers/specs/.
 """
 
 __version__ = "0.0.1"
+
+from iotables.parse import load_bea_tables  # noqa: E402  (after __version__: square reads it)
+from iotables.square import SquareIOTable, build_square_table  # noqa: E402
+
+__all__ = ["SquareIOTable", "__version__", "build_square_table", "load_bea_tables"]
