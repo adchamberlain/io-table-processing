@@ -119,3 +119,27 @@ def test_bea_mode_rejects_all_scrap_industry(toy_make, toy_use):
     make2 = dataclasses.replace(toy_make, values=values)
     with pytest.raises(ValueError, match=r"\['C'\]"):
         square.build_square_table(make2, toy_use, scrap="bea")
+
+def test_redistribute_rows_preserves_column_totals(toy_use):
+    U2, un = square.redistribute_rows(toy_use.intermediate, ["S00401"])
+    assert "S00401" not in U2.index and un == {}
+    assert np.allclose(U2.sum(axis=0).values, toy_use.intermediate.sum(axis=0).values)   # 281, 303, 231
+    assert U2.loc["A", "A"] == pytest.approx(50 + 1 * 50 / 280)
+
+def test_redistribute_rows_reports_unallocated():
+    blk = pd.DataFrame({"j": [0.0, 0.0, 4.0]}, index=["a", "b", "S00401"])
+    out, un = square.redistribute_rows(blk, ["S00401"])
+    assert un == {"j": 4.0} and (out["j"] == 0).all()
+
+def test_redistribute_mode(toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="redistribute")
+    assert sq.check_identities()["row_minus_col"] < 1e-9 and (sq.Z.values >= 0).all()
+    assert not np.allclose(sq.y.values, [328, 412, 265])          # y is the row total, not BEA's g
+    d = sq.meta["diagnostics"]
+    assert d["redistributed"]["intermediate"] == pytest.approx(5.0) and d["y_minus_g"].abs().max() > 0
+
+def test_drop_codes_removed_and_recorded(toy_make, toy_use):
+    use3 = add_use_row(toy_use, "S00300", [2, 0, 0], fd=[-2]); make3 = add_make_column(toy_make, "S00300", [0, 0, 0])
+    sq = square.build_square_table(make3, use3, scrap="bea")
+    assert sq.meta["diagnostics"]["dropped"]["S00300"] == {"intermediate": 2.0, "final_demand": -2.0}
+    assert "S00300" not in sq.market_shares.columns

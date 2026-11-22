@@ -13,11 +13,12 @@ design spec section 7):
 
 Before transforming, noncomparable imports and the rest-of-world adjustment
 (DROP_CODES) leave the tables, and the scrap mode decides how scrap and
-used/secondhand goods (SCRAP_CODES) are handled. Implemented so far:
-"keep", which treats them as ordinary commodities, and "bea", BEA's nonscrap-ratio
-method (I-O manual ch. 12): scrap leaves the tables and each industry's market
-shares are divided by its nonscrap ratio r = (g - scrap output) / g, which keeps
-industry output at g.
+used/secondhand goods (SCRAP_CODES) are handled: "keep" treats them as ordinary
+commodities; "bea", BEA's nonscrap-ratio method (I-O manual ch. 12), removes them
+and divides each industry's market shares by its nonscrap ratio
+r = (g - scrap output) / g, which keeps industry output at g; "redistribute", the
+methodology paper's rule, spreads each column's scrap purchases over the other
+commodities in proportion to their purchases, so industry output differs from g.
 
 Industries and commodities are different code sets; everything is aligned by
 code, never by position.
@@ -107,6 +108,10 @@ def build_square_table(
     Scrap mode "bea" records the nonscrap ratio (a Series by industry) and the
     scrap purchases it drops, {code: {"intermediate": $, "final_demand": $}}, in
     `meta["diagnostics"]` as "nonscrap_ratio" and "scrap_purchases_dropped".
+    Mode "redistribute" (see `redistribute_rows`) records "redistributed":
+    {"intermediate": $ moved in U, "final_demand": $ moved in D, "unallocated":
+    {column: $}}, the scrap value of columns with no other purchases to receive it
+    (industry and final-demand column codes are distinct, so one dict serves both).
 
     Industry output g (for diagnostics) is the use table's T008 row, or the
     make table's row totals when the use table has none.
@@ -132,9 +137,18 @@ def build_square_table(
 
     # Scrap mode (spec 7.3), step 1: which scrap and used-goods rows and columns
     # leave the tables. "keep" treats them as ordinary commodities.
-    if scrap == "redistribute":
-        raise NotImplementedError(f"scrap mode {scrap!r} is not implemented yet")
     nonscrap_ratio = None
+    if scrap == "redistribute":
+        present = [c for c in scrap_codes if c in U.index]
+        scrap_in_U, scrap_in_D = U.loc[present].to_numpy().sum(), D.loc[present].to_numpy().sum()
+        U, unallocated_U = redistribute_rows(U, present)
+        D, unallocated_D = redistribute_rows(D, present)
+        M = M.drop(columns=[c for c in scrap_codes if c in M.columns])
+        diagnostics["redistributed"] = {
+            "intermediate": float(scrap_in_U) - sum(unallocated_U.values()),
+            "final_demand": float(scrap_in_D) - sum(unallocated_D.values()),
+            "unallocated": {**unallocated_U, **unallocated_D},
+        }
     if scrap == "bea":
         nonscrap_ratio = _nonscrap_ratio(M, g, scrap_codes)
         M, U, D, diagnostics["scrap_purchases_dropped"], _ = _remove_commodities(
@@ -145,8 +159,8 @@ def build_square_table(
     M = _align_commodities(M, U, D)
     q = M.sum(axis=0)
     shares = market_shares(M)
-    # Scrap mode, step 2: N from the market shares. "keep" uses them as they are;
-    # "bea" scales each industry's row up by 1 / its nonscrap ratio.
+    # Scrap mode, step 2: N from the market shares. "keep" and "redistribute" use
+    # them as they are; "bea" scales each industry's row up by 1 / its nonscrap ratio.
     N = shares if nonscrap_ratio is None else shares.div(nonscrap_ratio, axis=0)
 
     Z = N @ U  # pandas aligns N's commodity columns with U's commodity rows by code
@@ -173,6 +187,28 @@ def build_square_table(
         commodity_labels=use.commodity_labels.loc[M.columns],
         meta=meta,
     )
+
+
+def redistribute_rows(
+    block: pd.DataFrame, rows: Sequence[str]
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Spread the `rows` over the other rows in proportion to their values, column by column.
+
+    In each column the `rows` total s is added to the other rows in proportion to
+    their values, so column totals are unchanged, and the `rows` are dropped. A
+    column whose other rows sum to zero cannot receive s: it keeps its other rows
+    as they are and s is returned in the second value, {column: s}. Proportions
+    are the other rows' values over their sum, with no special treatment of
+    negative values. Raises KeyError for a row not in `block`.
+    """
+    rows = list(rows)
+    scrap = block.loc[rows].sum(axis=0)
+    others = block.drop(index=rows)
+    total = others.sum(axis=0)
+    receives = total != 0
+    scale = scrap.where(receives, 0.0) / total.where(receives, 1.0)
+    unallocated = {str(c): float(scrap[c]) for c in total.index[~receives]}
+    return others + others * scale, unallocated
 
 
 def _check_industries(make: MakeTable, use: UseTable) -> list[str]:
