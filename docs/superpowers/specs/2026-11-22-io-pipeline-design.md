@@ -174,7 +174,8 @@ result = model.run(shocks.carbon_price(dollars_per_ton_co2=50, emissions_year=20
 
 ### 5.3 CLI
 
-- `iotables build [--level detail] [--year 2017|2012|2007|latest] [--redefinitions after|before] [--scrap bea|redistribute|keep] [--out data/output] [--make PATH --use PATH]`
+- `iotables build [--level detail] [--year 2017|2012|2007|latest] [--redefinitions after|before] [--scrap bea|redistribute|keep] [--scrap-codes S00401,S00402] [--out data/output] [--make PATH --use PATH]`
+  Output name `us_io_<year>_<level>_<redefinitions>_<scrap>.xlsx`, with a `_scrap-<codes>` suffix when the scrap codes differ from the library default.
   (`--level summary` arrives with Phase 2, section 6.1.)
 - `iotables run --table data/output/... --shock 'industry:211000:dollars=50000' ... [--carbon 50 --emissions-year 2024]`
 - `iotables check` runs identities and, when the BEA requirements file is present,
