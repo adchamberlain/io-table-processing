@@ -1,6 +1,9 @@
 # tests/test_square.py
 import dataclasses
-import numpy as np, pandas as pd, pytest
+import datetime
+import json
+import numpy as np, openpyxl, pandas as pd, pytest
+import iotables
 from iotables import square, parse
 from conftest import add_use_row, add_make_column
 
@@ -143,3 +146,107 @@ def test_drop_codes_removed_and_recorded(toy_make, toy_use):
     sq = square.build_square_table(make3, use3, scrap="bea")
     assert sq.meta["diagnostics"]["dropped"]["S00300"] == {"intermediate": 2.0, "final_demand": -2.0}
     assert "S00300" not in sq.market_shares.columns
+
+
+def test_to_frame_layout(toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea"); f = sq.to_frame()
+    assert list(f.index) == ["A", "B", "C", "V00100", "V00200", "V00300", "T008"]
+    assert list(f.columns) == ["Description", "A", "B", "C", "F01000", "T008"]
+    assert f.loc["A", "T008"] == pytest.approx(sq.y["A"]) and f.loc["T008", "A"] == pytest.approx(sq.y["A"])
+    assert f.loc["T008", "T008"] == pytest.approx(sq.y.sum() + sq.F.values.sum())
+    assert f.loc["V00300", "F01000"] == 0.0
+
+
+def test_to_frame_values_and_descriptions(toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea"); f = sq.to_frame()
+    assert f.loc["A", "B"] == sq.Z.loc["A", "B"] and f.loc["B", "F01000"] == sq.F.loc["B", "F01000"]
+    assert f.loc["V00300", "C"] == sq.V.loc["V00300", "C"]
+    assert f.loc["V00300", "T008"] == pytest.approx(sq.V.loc["V00300"].sum())
+    assert f.loc["T008", "F01000"] == pytest.approx(sq.F["F01000"].sum())
+    assert list(f["Description"]) == ["Industry A", "Industry B", "Industry C", "Compensation of employees",
+                                      "Taxes on production and imports, less subsidies",
+                                      "Gross operating surplus", "Total industry output"]
+    assert (f.drop(columns="Description").dtypes == float).all()
+
+
+def test_excel_roundtrip(tmp_path, toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea"); p = sq.to_excel(tmp_path / "t.xlsx")
+    back = square.read_square_frame(p)
+    pd.testing.assert_frame_equal(back.drop(columns="Description").astype(float), sq.to_frame().drop(columns="Description").astype(float), atol=1e-9)
+
+
+@pytest.mark.parametrize("scrap", square.SCRAP_MODES)
+def test_excel_roundtrip_keeps_descriptions_and_dtypes(tmp_path, toy_make, toy_use, scrap):
+    sq = square.build_square_table(toy_make, toy_use, scrap=scrap)
+    back = square.read_square_frame(sq.to_excel(tmp_path / "t.xlsx"))
+    pd.testing.assert_frame_equal(back, sq.to_frame(), atol=1e-9)
+    assert (back.drop(columns="Description").dtypes == float).all()
+
+
+def test_excel_layout(tmp_path, toy_make, toy_use):
+    toy_make.meta.update(year=2017, level="detail")
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea")
+    ws = openpyxl.load_workbook(sq.to_excel(tmp_path / "out" / "t.xlsx"))["square"]
+    assert [ws.cell(r, 1).value for r in (1, 2, 3)] == ["2017 detail-level U.S. Input-Output Table", "3 industries", "($ Millions)"]
+    assert [ws.cell(5, c).value for c in range(1, 8)] == ["Code", None, "A", "B", "C", "F01000", "T008"]
+    assert [ws.cell(6, c).value for c in range(1, 8)] == ["Industry", "Description", "Industry A", "Industry B", "Industry C",
+                                                          "Personal consumption expenditures", "Total industry output"]
+    assert [ws.cell(7, c).value for c in (1, 2)] == ["A", "Industry A"] and ws.cell(7, 3).value == pytest.approx(sq.Z.loc["A", "A"])
+    assert ws.cell(13, 1).value == "T008" and ws.cell(14, 1).value is None
+    assert ws.cell(15, 1).value == f"Source: Bureau of Economic Analysis; built with iotables {iotables.__version__} on {datetime.date.today().isoformat()}"
+    assert openpyxl.load_workbook(sq.to_excel(tmp_path / "t2.xlsx", title="Custom"))["square"]["A1"].value == "Custom"
+
+
+def test_excel_title_falls_back_without_year_and_level(tmp_path, toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea")
+    assert openpyxl.load_workbook(sq.to_excel(tmp_path / "t.xlsx"))["square"]["A1"].value == "U.S. Input-Output Table"
+
+
+def test_read_square_frame_finds_header_by_content(tmp_path, toy_make, toy_use):
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea"); p = sq.to_excel(tmp_path / "t.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"].insert_rows(1, 4); wb.save(p)
+    pd.testing.assert_frame_equal(square.read_square_frame(p), sq.to_frame(), atol=1e-9)
+
+
+def test_read_square_frame_rejects_file_without_code_row(tmp_path):
+    wb = openpyxl.Workbook(); wb.active.title = "square"; wb.active["A1"] = "nothing here"; wb.save(tmp_path / "t.xlsx")
+    with pytest.raises(ValueError, match="Code"):
+        square.read_square_frame(tmp_path / "t.xlsx")
+
+
+def test_read_square_frame_rejects_blank_cells(tmp_path, toy_make, toy_use):
+    p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"]["D8"] = None; wb.save(p)
+    with pytest.raises(ValueError, match="blank"):
+        square.read_square_frame(p)
+
+
+def test_read_square_frame_rejects_row_without_code(tmp_path, toy_make, toy_use):
+    p = square.build_square_table(toy_make, toy_use, scrap="bea").to_excel(tmp_path / "t.xlsx")
+    wb = openpyxl.load_workbook(p); wb["square"]["A8"] = None; wb.save(p)
+    with pytest.raises(ValueError, match="Industry B"):
+        square.read_square_frame(p)
+
+
+@pytest.mark.parametrize("scrap", square.SCRAP_MODES)
+def test_to_csv_writes_all_parts(tmp_path, toy_make, toy_use, scrap):
+    paths = square.build_square_table(toy_make, toy_use, scrap=scrap).to_csv(tmp_path)
+    assert set(paths) == {"square", "Z", "F", "V", "y", "market_shares", "labels", "meta"} and all(p.exists() for p in paths.values())
+
+
+def test_to_csv_contents(tmp_path, toy_make, toy_use):
+    toy_make.meta.update(year=2017, level="detail")
+    sq = square.build_square_table(toy_make, toy_use, scrap="bea"); paths = sq.to_csv(tmp_path / "out")
+    read = lambda name: pd.read_csv(paths[name], index_col="Code").rename_axis(None)
+    pd.testing.assert_frame_equal(read("Z"), sq.Z)
+    pd.testing.assert_frame_equal(read("V"), sq.V)
+    pd.testing.assert_series_equal(read("y")["y"], sq.y, check_names=False)
+    pd.testing.assert_frame_equal(read("square"), sq.to_frame())
+    labels = pd.read_csv(paths["labels"])
+    assert list(labels.columns) == ["kind", "code", "description"] and set(labels["kind"]) == {"industry", "final_demand", "commodity"}
+    assert labels.set_index(["kind", "code"]).loc[("commodity", "A"), "description"] == "Commodity A"
+    meta = json.loads(paths["meta"].read_text())
+    assert meta["year"] == 2017 and meta["level"] == "detail"
+    assert meta["diagnostics"]["scrap_mode"] == "bea"
+    assert meta["diagnostics"]["nonscrap_ratio"]["A"] == pytest.approx(sq.meta["diagnostics"]["nonscrap_ratio"]["A"])
+    assert meta["commodity_output"]["A"] == 330.0 and meta["source"]["make"]["year"] == 2017

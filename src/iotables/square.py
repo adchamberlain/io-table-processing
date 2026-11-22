@@ -22,19 +22,39 @@ commodities in proportion to their purchases, so industry output differs from g.
 
 Industries and commodities are different code sets; everything is aligned by
 code, never by position.
+
+`SquareIOTable.to_frame` gives the table in the layout of the legacy 2002
+spreadsheets (code, description, industries, final demand, T008 total; rows:
+industries, V00100, V00200, V00300, T008); `to_excel`, `read_square_frame` and
+`to_csv` write and read it.
 """
 
+import datetime
+import json
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass
+from pathlib import Path
 
+import numpy as np
+import openpyxl
 import pandas as pd
 
+import iotables
 from iotables import validate
-from iotables.parse import MakeTable, UseTable
+from iotables.parse import MakeTable, UseTable, normalize_code
 
 SCRAP_CODES = ("S00401", "S00402")  # scrap; used and secondhand goods
 DROP_CODES = ("S00300", "S00900")  # noncomparable imports; rest-of-world adjustment
 SCRAP_MODES = ("bea", "redistribute", "keep")
+VALUE_ADDED_LABELS = {
+    "V00100": "Compensation of employees",
+    "V00200": "Taxes on production and imports, less subsidies",
+    "V00300": "Gross operating surplus",
+}
+TOTAL_LABEL = "Total industry output"  # description of the T008 row and column
+SHEET = "square"  # the sheet `to_excel` writes and `read_square_frame` reads
+_FIRST_VALUE_COL = 3  # column C: Excel columns A and B hold the code and the description
 
 
 @dataclass
@@ -75,6 +95,177 @@ class SquareIOTable:
         See `validate.check_identities`.
         """
         return validate.check_identities(self, tol)
+
+    def to_frame(self) -> pd.DataFrame:
+        """The table in the legacy layout ($ millions), indexed and aligned by code.
+
+        Rows: the industries, V00100, V00200, V00300, T008. Columns: "Description",
+        the industries, the final-demand codes, T008. Industry rows carry Z | F | y;
+        value-added rows carry V under the industries, 0.0 under final demand and
+        their row sum under T008; the T008 row carries y under the industries, the
+        column sums of F under final demand and their total with y (the sum of the
+        row) under T008.
+        """
+        industries, final_demand = self.industries, list(self.F.columns)
+        columns = industries + final_demand + ["T008"]
+        body = pd.concat([self.Z, self.F], axis=1)
+        body["T008"] = self.y
+        value_added = self.V.loc[:, industries].reindex(columns=columns, fill_value=0.0)
+        value_added["T008"] = value_added[industries].sum(axis=1)
+        totals = pd.concat([self.y.loc[industries], self.F.sum(axis=0)])
+        totals["T008"] = totals.sum()
+        frame = pd.concat([body, value_added, totals.to_frame("T008").T])
+        labels = pd.concat(
+            [
+                self.industry_labels.loc[industries],
+                pd.Series(VALUE_ADDED_LABELS),
+                pd.Series({"T008": TOTAL_LABEL}),
+            ]
+        )
+        frame.insert(0, "Description", labels)
+        return frame
+
+    def to_excel(self, path: Path, title: str | None = None) -> Path:
+        """Write `to_frame()` to sheet "square" of an xlsx file; returns the path.
+
+        A1 title (default "<year> <level>-level U.S. Input-Output Table" from
+        `meta`, else "U.S. Input-Output Table"), A2 "<n> industries", A3 "($
+        Millions)"; row 5 the codes (A5 "Code"), row 6 the column descriptions (A6
+        "Industry", B6 "Description"); data from row 7 with each row's code and
+        description in columns A and B; then a blank row and the source line.
+        `read_square_frame` reads the file back.
+        """
+        path = Path(path)
+        if title is None:
+            if "year" in self.meta and "level" in self.meta:
+                title = f"{self.meta['year']} {self.meta['level']}-level U.S. Input-Output Table"
+            else:
+                title = "U.S. Input-Output Table"
+        frame = self.to_frame()
+        codes = list(frame.columns[1:])
+        descriptions = pd.concat(
+            [
+                self.industry_labels.loc[self.industries],
+                self.final_demand_labels.loc[list(self.F.columns)],
+                pd.Series({"T008": TOTAL_LABEL}),
+            ]
+        )
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = SHEET
+        ws["A1"], ws["A2"], ws["A3"] = title, f"{self.n} industries", "($ Millions)"
+        ws["A5"], ws["A6"], ws["B6"] = "Code", "Industry", "Description"
+        for j, code in enumerate(codes):
+            ws.cell(5, _FIRST_VALUE_COL + j, code)
+            ws.cell(6, _FIRST_VALUE_COL + j, descriptions.loc[code])
+        for i, (code, row) in enumerate(frame.iterrows()):
+            ws.cell(7 + i, 1, code)
+            ws.cell(7 + i, 2, row["Description"])
+            for j, value in enumerate(row.iloc[1:]):
+                ws.cell(7 + i, _FIRST_VALUE_COL + j, float(value))
+        today = datetime.date.today().isoformat()
+        ws.cell(
+            7 + len(frame) + 1,
+            1,
+            f"Source: Bureau of Economic Analysis; built with iotables {iotables.__version__} on {today}",
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(path)
+        return path
+
+    def to_csv(self, directory: Path) -> dict[str, Path]:
+        """Write the table's parts as CSV files in `directory`; returns {name: path}.
+
+        square.csv (`to_frame()`), Z, F, V, y (column "y"), market_shares, labels
+        (columns kind, code, description for industries, final demand and
+        commodities) and meta.json (`meta` with Series and DataFrames as dicts and
+        anything else JSON cannot hold as strings).
+        """
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        labels = pd.concat(
+            {
+                "industry": self.industry_labels,
+                "final_demand": self.final_demand_labels,
+                "commodity": self.commodity_labels,
+            },
+            names=["kind", "code"],
+        )
+        tables = {
+            "square": self.to_frame(),
+            "Z": self.Z,
+            "F": self.F,
+            "V": self.V,
+            "y": self.y.to_frame("y"),
+            "market_shares": self.market_shares,
+        }
+        paths = {name: directory / f"{name}.csv" for name in (*tables, "labels", "meta")}
+        for name, table in tables.items():
+            table.to_csv(paths[name], index_label="Code")
+        labels.rename("description").reset_index().to_csv(paths["labels"], index=False)
+        paths["meta"].write_text(json.dumps(_jsonable(self.meta), indent=2) + "\n")
+        return paths
+
+
+def read_square_frame(path: Path) -> pd.DataFrame:
+    """Read a `SquareIOTable.to_excel` file back into the `to_frame()` layout.
+
+    The "Code" row is the first row whose column A, stripped and lower-cased, is
+    "code", wherever it sits: its codes run from column C to the first empty
+    cell, the description row follows it, and data rows (code in column A,
+    description in column B, then the values) run from there to the first row
+    with columns A and B both empty. Raises ValueError without a "Code" row or
+    when a data cell is blank or not a number.
+    """
+    with closing(openpyxl.load_workbook(Path(path), read_only=True, data_only=True)) as wb:
+        ws = wb[SHEET]
+        ws.reset_dimensions()
+        rows = list(ws.iter_rows(values_only=True))
+    width = max((len(r) for r in rows), default=0) + 2
+    rows = [tuple(r) + (None,) * (width - len(r)) for r in rows]  # every row has the same width
+    code_idx = next(
+        (i for i, r in enumerate(rows) if str(r[0] or "").strip().lower() == "code"), None
+    )
+    if code_idx is None:
+        raise ValueError(f"sheet {SHEET!r}: no row with 'Code' in column A")
+    first = _FIRST_VALUE_COL - 1  # zero-based
+    columns = []
+    for cell in rows[code_idx][first:]:
+        code = normalize_code(cell)
+        if code is None:
+            break
+        columns.append(code)
+    index, descriptions, data = [], [], []
+    for r in rows[code_idx + 2 :]:
+        code, description = normalize_code(r[0]), r[1]
+        if code is None and description is None:
+            break
+        if code is None:
+            raise ValueError(f"sheet {SHEET!r}: data row {description!r} has no code")
+        index.append(code)
+        descriptions.append(description)
+        data.append(r[first : first + len(columns)])
+    values = pd.DataFrame(data, index=index, columns=columns, dtype=object)
+    if values.isna().any(axis=None):
+        raise ValueError(f"sheet {SHEET!r}: blank data cells in the table body")
+    frame = values.astype(float)
+    frame.insert(0, "Description", pd.Series(descriptions, index=index, dtype=object))
+    return frame
+
+
+def _jsonable(obj):
+    """`obj` with Series and DataFrames as dicts, numpy scalars as Python ones and the rest as strings."""
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (pd.Series, pd.DataFrame)):
+        return _jsonable(obj.to_dict())
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    return str(obj)
 
 
 def market_shares(make_values: pd.DataFrame) -> pd.DataFrame:
