@@ -2,7 +2,7 @@
 import dataclasses
 import openpyxl, pandas as pd, pytest
 from pathlib import Path
-from iotables import parse
+from iotables import parse, square
 
 def write_bea_workbook(path: Path, *, sheet="2017", title="Make Table, After Redefinitions, 2017",
                        row_label="Industry Description", col_codes=None, col_descs=None, rows=None,
@@ -89,6 +89,30 @@ def toy_make(toy_make_grid):
 @pytest.fixture
 def toy_use(toy_use_grid):
     return parse.UseTable.from_grid(toy_use_grid)
+
+
+@pytest.fixture
+def two_by_two():
+    """A hand-built 2-industry, 2-commodity SquareIOTable for the shock and price-model tests.
+
+    Industries "1", "2": Z = [[10, 20], [30, 40]], F01000 = [70, 30], y = [100, 100], value added
+    V00100 = [30, 20], V00200 = [0, 0], V00300 = [30, 20]. Commodities "a", "b" with make
+    M = [[90, 10], [0, 100]] (q = [90, 110]), so market shares are [[1, 10/110], [0, 100/110]].
+    """
+    industries, commodities = ["1", "2"], ["a", "b"]
+    market_shares = pd.DataFrame([[1.0, 10 / 110], [0.0, 100 / 110]], index=industries, columns=commodities)
+    return square.SquareIOTable(
+        Z=pd.DataFrame([[10.0, 20.0], [30.0, 40.0]], index=industries, columns=industries),
+        F=pd.DataFrame({"F01000": [70.0, 30.0]}, index=industries),
+        V=pd.DataFrame([[30.0, 20.0], [0.0, 0.0], [30.0, 20.0]],
+                       index=["V00100", "V00200", "V00300"], columns=industries),
+        y=pd.Series([100.0, 100.0], index=industries),
+        N=market_shares.copy(),
+        market_shares=market_shares,
+        industry_labels=pd.Series({"1": "One", "2": "Two"}),
+        final_demand_labels=pd.Series({"F01000": "PCE"}),
+        commodity_labels=pd.Series({"a": "Alpha", "b": "Beta"}),
+        meta={"year": 2017, "level": "toy", "commodity_output": pd.Series({"a": 90.0, "b": 110.0})})
 
 
 def add_use_row(use, code, intermediate_values, fd):
