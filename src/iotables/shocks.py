@@ -21,13 +21,19 @@ gives the dollars each industry bears (what the price model's WP6 mode takes),
 `to_tau_T` the (tau, T) pair. Codes are aligned by name, an unknown code raises
 KeyError, and a shock on an industry with no output raises ValueError, since its
 tau is undefined.
+
+`carbon_price` builds a preset: a $/ton CO2 price on the fossil-fuel extraction
+industries, from EIA's CO2 emissions by fuel (Monthly Energy Review table 11.1).
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
+from iotables.download import fetch
+from iotables.sources import EIA_CO2_URL, RAW_DIR
 from iotables.square import SquareIOTable
 
 
@@ -153,3 +159,57 @@ def to_tau_T(shocks: Sequence[Shock], sq: SquareIOTable) -> tuple[pd.Series, pd.
                 _check_industry(code, sq)
             T.loc[shock.seller, shock.buyer] += shock.rate
     return tau, T
+
+
+# --- carbon-pricing preset ----------------------------------------------------
+
+# EIA Monthly Energy Review table 11.1 series: CO2 from energy consumption, by fuel.
+EIA_SERIES = {"coal": "CKTCEUS", "natural_gas": "NNTCEUS", "petroleum": "PMTCEUS", "total": "TETCEUS"}
+
+# The extraction industry where a fuel enters the economy ("upstream" coverage), by table level.
+CARBON_INDUSTRIES = {"detail": {"coal": "212100", "natural_gas": "211000", "petroleum": "211000"}}
+
+_EIA_FILENAME = "eia_t11_01.csv"     # the URL path is csv.php, so fetch's default filename would be useless
+
+
+def eia_co2_by_fuel(year: int, data_dir: Path = RAW_DIR, force: bool = False, path: Path | None = None) -> dict[str, float]:
+    """US energy-related CO2 emissions in `year`, million metric tons, by fuel (keys of `EIA_SERIES`).
+
+    Reads EIA's annual rows (`YYYYMM` is `<year>13`) of Monthly Energy Review table 11.1,
+    downloaded to `data_dir / "eia"` and cached; `path` reads that CSV instead, with no
+    download. Raises ValueError when a series has no value for `year` (no annual row,
+    or a "Not Available" value).
+    """
+    if path is None:
+        path = fetch(EIA_CO2_URL, Path(data_dir) / "eia", filename=_EIA_FILENAME, force=force)
+    df = pd.read_csv(path, dtype=str, usecols=["MSN", "YYYYMM", "Value"])
+    annual = df[df["YYYYMM"] == f"{year}13"]
+    out = {}
+    for fuel, msn in EIA_SERIES.items():
+        values = pd.to_numeric(annual.loc[annual["MSN"] == msn, "Value"], errors="coerce").dropna()
+        if len(values) != 1:
+            raise ValueError(f"{path}: expected one CO2 value for {msn} ({fuel}) in {year}, found {len(values)}")
+        out[fuel] = float(values.iloc[0])
+    return out
+
+
+def carbon_price(dollars_per_ton_co2: float, emissions_year: int, coverage: str = "upstream", level: str = "detail",
+                 data_dir: Path = RAW_DIR, path: Path | None = None) -> list[IndustryTax]:
+    """A carbon price of `dollars_per_ton_co2` on `emissions_year`'s CO2, as industry taxes ($ millions).
+
+    Upstream coverage taxes each fossil fuel where it is extracted: million metric
+    tons x $/ton = $ millions, put on the industry `CARBON_INDUSTRIES` names for
+    `level`. Fuels that share an industry (oil and gas) are summed into one tax.
+    Returns one `IndustryTax` per industry, sorted by code. Raises
+    NotImplementedError for any other `coverage` and KeyError for an unknown `level`.
+    `data_dir` and `path` are as in `eia_co2_by_fuel`.
+    """
+    if coverage != "upstream":
+        raise NotImplementedError(f"carbon_price coverage {coverage!r}: only 'upstream' is implemented")
+    if level not in CARBON_INDUSTRIES:
+        raise KeyError(f"no carbon-price industries for level {level!r}; have {sorted(CARBON_INDUSTRIES)}")
+    emissions = eia_co2_by_fuel(emissions_year, data_dir=data_dir, path=path)
+    dollars: dict[str, float] = {}
+    for fuel, code in CARBON_INDUSTRIES[level].items():
+        dollars[code] = dollars.get(code, 0.0) + emissions[fuel] * dollars_per_ton_co2
+    return [IndustryTax(code, dollars=dollars[code]) for code in sorted(dollars)]
