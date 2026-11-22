@@ -594,7 +594,7 @@ def test_bea_mode_reproduces_bea_industry_by_industry_requirements(redefinitions
 If the `after` run fails the 1e-3 bound, do not loosen it: print the worst cells, try `before`, and if that one matches, switch the documented default in the spec and DEVLOG and make the assertion follow the matching one. If neither matches, stop and investigate with superpowers:systematic-debugging (candidates: BEA computing W at a different aggregation, treatment of S00402/S00900, government industries).
 
 - [ ] **Step 2: Run to verify failure.** - [ ] **Step 3: Implement `cli.py` (`build`, `check`) and `validate.ixi_total_requirements`.**
-- [ ] **Step 4: Run** — `pytest tests/test_cli.py tests/test_bea_ixi.py -v -s` → PASS; copy the printed max/mean diffs into DEVLOG.txt.
+- [ ] **Step 4: Run** — `pytest tests/test_cli.py tests/test_bea_ixi.py -v -s` → PASS; copy the printed max/mean diffs into the private working log.
 - [ ] **Step 5: Commit** — `git commit -am "feat: iotables build/check CLI; verify against BEA 2017 industry-by-industry requirements"`
 
 ## Part B — Price model
@@ -664,7 +664,7 @@ def test_unknown_code_raises(two_by_two):
 - Test: `tests/test_leontief.py`
 
 **Interfaces:**
-- `@dataclass class PriceResult: industry_prices: pd.DataFrame  # columns code, description, pct_change; commodity_prices: pd.DataFrame | None; pce_prices: pd.DataFrame | None; burden_by_final_demand: pd.DataFrame  # columns code, description, base_spending, burden; summary: dict; shocks: list; notes: list[str]`
+- `@dataclass class PriceResult: industry_prices: pd.DataFrame  # columns code, description, price_change; commodity_prices: pd.DataFrame | None; pce_prices: pd.DataFrame | None; burden_by_final_demand: pd.DataFrame  # columns code, description, base_spending, burden; summary: dict; shocks: list; notes: list[str]`
 - `class PriceModel:`
   - `def __init__(self, sq: SquareIOTable, pce_bridge: "PCEBridge | None" = None, formulation: str = "output_tax", margin_codes: dict[str, list[str]] | None = None)` — `formulation ∈ {"output_tax", "wp6"}`; computes `self.A = Z / y` (column shares) and `self.v = (y − Z.sum(0)) / y`; raises `ValueError` if `baseline_prices()` deviates from 1 by more than 1e-9.
   - `def baseline_prices(self) -> pd.Series` — `solve(I − A.T, v)`.
@@ -683,22 +683,22 @@ def test_baseline_is_ones(two_by_two):
 
 def test_output_tax_on_industry(two_by_two):
     r = leontief.PriceModel(two_by_two).run([shocks.IndustryTax("1", rate=0.1)])
-    assert np.allclose(r.industry_prices["pct_change"].values, [0.125, 0.0416667], atol=1e-6)
+    assert np.allclose(r.industry_prices["price_change"].values, [0.125, 0.0416667], atol=1e-6)
     assert r.burden_by_final_demand.loc[0, "burden"] == pytest.approx(10.0)       # 0.125*70 + 0.0416667*30
     assert r.summary["total_tax"] == pytest.approx(10.0) and abs(r.summary["identity_residual"]) < 1e-9
 
 def test_flow_tax(two_by_two):
     r = leontief.PriceModel(two_by_two).run([shocks.FlowTax("1", "2", 0.5)])
-    assert np.allclose(r.industry_prices["pct_change"].values, [0.0666667, 0.2], atol=1e-6)
+    assert np.allclose(r.industry_prices["price_change"].values, [0.0666667, 0.2], atol=1e-6)
     assert r.summary["total_tax"] == pytest.approx(10.6666667, abs=1e-6)         # 0.5*20*1.0666667
     assert abs(r.summary["identity_residual"]) < 1e-9
 
 def test_wp6_formulation(two_by_two):
     m = leontief.PriceModel(two_by_two, formulation="wp6")
     r = m.run([shocks.IndustryTax("1", dollars=3)])                                # t_1 = 3/30 = 0.1
-    assert np.allclose(r.industry_prices["pct_change"].values, [0.0256410, 0.0427350], atol=1e-6)
+    assert np.allclose(r.industry_prices["price_change"].values, [0.0256410, 0.0427350], atol=1e-6)
     r2 = m.run([shocks.IndustryTax("1", rate=0.1)])
-    assert np.allclose(r2.industry_prices["pct_change"].values, r.industry_prices["pct_change"].values)
+    assert np.allclose(r2.industry_prices["price_change"].values, r.industry_prices["price_change"].values)
     with pytest.raises(ValueError):
         m.run([shocks.FlowTax("1", "2", 0.1)])
 
@@ -707,7 +707,7 @@ def test_wp6_replicates_2009_price_impacts():
     sq = build_2002_summary()                                   # helper in conftest using the Task 8 fixtures (keep mode)
     r = leontief.PriceModel(sq, formulation="wp6").run([shocks.IndustryTax("2110", rate=0.3954367423979727),
                                                          shocks.IndustryTax("2121", rate=1.8694564238089508)])
-    p = r.industry_prices.set_index("code")["pct_change"] + 1
+    p = r.industry_prices.set_index("code")["price_change"] + 1
     for code, expected in {"1110": 1.0249967298379448, "2110": 1.0202324094628146, "2121": 1.1472503329037465,
                            "2211": 1.1650275425430783, "2212": 1.185103762352647, "S007": 1.0104328673003136}.items():
         assert p[code] == pytest.approx(expected, abs=1e-6)
@@ -733,8 +733,8 @@ def test_wp6_replicates_2009_price_impacts():
 - Modifies (`leontief.py`):
   - `PriceModel.commodity_price_changes(self, dp: pd.Series) -> pd.Series` — `market_shares.T @ dp` over commodities with output > 0.
   - `PriceModel.margin_price_changes(self, dp_c: pd.Series) -> dict[str, float]` — output-weighted (`meta["commodity_output"]`) mean of `dp_c` over each list in `margin_codes` (`self.margin_codes` defaults to `MARGIN_CODES.get(sq.meta.get("level"), None)`); codes absent from the table are ignored; an empty list → `ValueError`.
-  - `PriceModel.pce_price_changes(self, dp_c: pd.Series, margins: dict[str, float]) -> tuple[pd.DataFrame, list[str]]` — per NIPA line: `dP_k = Σ(PV·dp_c + TC·m_t + WM·m_w + RM·m_r) / Σ PurchV` with `dp_c = 0` for commodities not in the table (each such code noted once); lines with `Σ PurchV == 0` get `dP = 0` and a note. Returns frame `[nipa_line, pce_category, pct_change, base_spending, burden]` sorted by `nipa_line` as int when possible.
-  - `run()` now fills `commodity_prices` (`[code, description, pct_change]`) always, and `pce_prices` + `summary["pce_burden"]` + `summary["pce_share_of_burden"]` when a bridge is present; `notes` collects the bridge notes.
+  - `PriceModel.pce_price_changes(self, dp_c: pd.Series, margins: dict[str, float]) -> tuple[pd.DataFrame, list[str]]` — per NIPA line: `dP_k = Σ(PV·dp_c + TC·m_t + WM·m_w + RM·m_r) / Σ PurchV` with `dp_c = 0` for commodities not in the table (each such code noted once); lines with `Σ PurchV == 0` get `dP = 0` and a note. Returns frame `[nipa_line, pce_category, price_change, base_spending, burden]` sorted by `nipa_line` as int when possible.
+  - `run()` now fills `commodity_prices` (`[code, description, price_change]`) always, and `pce_prices` + `summary["pce_burden"]` + `summary["pce_share_of_burden"]` when a bridge is present; `notes` collects the bridge notes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -762,19 +762,19 @@ def synthetic_bridge():
 def test_commodity_and_pce_prices(two_by_two):
     m = leontief.PriceModel(two_by_two, pce_bridge=synthetic_bridge(), margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]})
     r = m.run([shocks.IndustryTax("1", rate=0.1)])
-    c = r.commodity_prices.set_index("code")["pct_change"]
+    c = r.commodity_prices.set_index("code")["price_change"]
     assert c["a"] == pytest.approx(0.125) and c["b"] == pytest.approx(0.0492424, abs=1e-6)
     p = r.pce_prices.set_index("nipa_line")
-    assert p.loc["1", "pct_change"] == pytest.approx(0.10984848, abs=1e-6)       # (80*.125 + 20*.0492424)/100
-    assert p.loc["2", "pct_change"] == pytest.approx(0.0492424, abs=1e-6)
-    assert p.loc["3", "pct_change"] == 0.0
+    assert p.loc["1", "price_change"] == pytest.approx(0.10984848, abs=1e-6)       # (80*.125 + 20*.0492424)/100
+    assert p.loc["2", "price_change"] == pytest.approx(0.0492424, abs=1e-6)
+    assert p.loc["3", "price_change"] == 0.0
     assert r.summary["pce_burden"] == pytest.approx(13.44697, abs=1e-4)
     assert any("zzz" in n for n in r.notes)
 
 def test_bridge_missing_commodity_noted(two_by_two):
     b = synthetic_bridge(); b.rows.loc[b.rows.nipa_line == "2", "purchasers_value"] = 0
     r = leontief.PriceModel(two_by_two, pce_bridge=b, margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]}).run([shocks.IndustryTax("1", rate=0.1)])
-    assert r.pce_prices.set_index("nipa_line").loc["2", "pct_change"] == 0.0 and any("purchasers" in n for n in r.notes)
+    assert r.pce_prices.set_index("nipa_line").loc["2", "price_change"] == 0.0 and any("purchasers" in n for n in r.notes)
 ```
 
 - [ ] **Step 2–4: fail → implement → pass** (`pytest tests/test_bridge.py tests/test_leontief.py -v`).
@@ -819,7 +819,7 @@ def test_eia_download_has_recent_year():
 ### Task 14: CLI `run`, end-to-end on 2017, README, DEVLOG
 
 **Files:**
-- Modify: `src/iotables/cli.py`, `src/iotables/__init__.py` (export `PriceModel, PriceResult, load_pce_bridge, shocks`), `README.md`, `DEVLOG.txt`
+- Modify: `src/iotables/cli.py`, `src/iotables/__init__.py` (export `PriceModel, PriceResult, load_pce_bridge, shocks`), `README.md` (plus the private working log, not in the repository)
 - Test: `tests/test_cli.py` (append), `tests/test_end_to_end.py`
 
 **Interfaces:**
@@ -853,12 +853,12 @@ def test_carbon_50_on_2017_detail(tmp_path):
     assert abs(s["identity_residual"]) < 1e-6 * s["total_tax"]
     assert 0.3 < s["pce_share_of_burden"] < 0.9
     pce = pd.read_csv(tmp_path / "pce_prices.csv")
-    top = pce.sort_values("pct_change", ascending=False).head(5)["pce_category"].str.lower().str.cat(sep=" ")
+    top = pce.sort_values("price_change", ascending=False).head(5)["pce_category"].str.lower().str.cat(sep=" ")
     assert "gas" in top or "electric" in top or "fuel" in top         # energy categories must lead
 ```
 
 - [ ] **Step 2–4: fail → implement → pass** (`pytest -v`, full suite; the end-to-end test takes a minute on first download).
-- [ ] **Step 5: Write `README.md`** (spec §10): purpose, one-paragraph method with the formulas from spec §7.4 and §8.3, install, `iotables build` / `check` / `run` with the carbon example and an excise-tax example, how validation was done (2002 tables, WP6, BEA IxI with the measured max diff), citations to the methodology paper and WP6, and the Phase 2 note. Append a dated entry to `DEVLOG.txt` summarizing what was built, test counts, the IxI match figures, and the carbon-run headline numbers.
+- [ ] **Step 5: Write `README.md`** (spec §10): purpose, one-paragraph method with the formulas from spec §7.4 and §8.3, install, `iotables build` / `check` / `run` with the carbon example and an excise-tax example, how validation was done (2002 tables, WP6, BEA IxI with the measured max diff), citations to the methodology paper and WP6, and the Phase 2 note. Append a dated entry to `the private working log` summarizing what was built, test counts, the IxI match figures, and the carbon-run headline numbers.
 - [ ] **Step 6: Commit** — `git add -A && git commit -m "feat: iotables run CLI, end-to-end carbon example, README"`
 
 ---
