@@ -197,3 +197,30 @@ def build_2002_summary() -> square.SquareIOTable:
         final_demand_labels=built.final_demand_labels.loc[final_demand],
         commodity_labels=built.commodity_labels,
         meta={"year": 2002, "level": "summary", "commodity_output": built.meta["commodity_output"]})
+
+
+def write_pce_bridge_workbook(path: Path) -> Path:
+    """A tiny PCE bridge in the layout of BEA's PCEBridge_2017_DET.xlsx; returns `path`.
+
+    Sheets "Data Layout" and "2017". In "2017": title, units and source in rows 1-3, the group labels
+    (Producers' Value, Transportation Costs, Trade Margins, Purchasers' Value) in row 4, the column
+    header in row 5 (its producers', transportation and purchasers' cells blank, as in BEA's file), and
+    from row 6 three data rows: NIPA lines 7, 7 and 13 (as ints), commodity codes 336111 and 336211
+    (ints) and "S00401"; then a blank row and a note the parser must not read.
+    """
+    wb = openpyxl.Workbook(); wb.active.title = "Data Layout"; ws = wb.create_sheet("2017")
+    for r, text in enumerate(["PCE Bridge Table, 2017", "[Millions of dollars]", "Bureau of Economic Analysis"], start=1):
+        ws.cell(r, 1, text)
+    for j, label in {5: "Producers' Value", 6: "Transportation Costs", 7: "            Trade Margins", 9: "Purchasers' Value"}.items():
+        ws.cell(4, j, label)
+    for j, label in enumerate(["NIPA Line", "PCE Category", "Commodity Code", "Commodity Description",
+                               None, None, "Wholesale", "Retail", None, "Year"], start=1):
+        if label is not None: ws.cell(5, j, label)
+    rows = [(7, "New domestic autos", 336111, "Automobile manufacturing", 14874, 711, 4699, 31275, 51558, 2017),
+            (7, "New domestic autos", 336211, "Motor vehicle body manufacturing", 81, 1, 25, 293, 400, 2017),
+            (13, "Used autos", "S00401", "Scrap", -10652, 0, 0, 0, -10652, 2017)]
+    for i, row in enumerate(rows, start=6):
+        for j, v in enumerate(row, start=1): ws.cell(i, j, v)
+    ws.cell(6 + len(rows) + 1, 1, "Note. Detail may not add to total due to rounding.")
+    wb.save(path)
+    return path

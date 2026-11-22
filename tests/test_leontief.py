@@ -3,7 +3,7 @@ import dataclasses
 import numpy as np
 import pandas as pd
 import pytest
-from iotables import leontief, shocks
+from iotables import bridge, leontief, shocks
 from conftest import build_2002_summary
 
 def test_baseline_is_ones(two_by_two):
@@ -59,3 +59,52 @@ def test_price_model_rejects_bad_inputs(two_by_two):
                                    F=pd.DataFrame({"F01000": [70.0, 100.0]}, index=["1", "2"]))
     with pytest.raises(ValueError, match="intermediate sales"):                     # industry 2 sells nothing to industries
         leontief.PriceModel(no_sales, formulation="wp6").run([shocks.IndustryTax("2", dollars=1)])
+
+def synthetic_bridge():
+    rows = pd.DataFrame([["1", "Thing", "a", "Alpha", 80, 5, 5, 10, 100],
+                         ["2", "Other", "b", "Beta", 50, 0, 0, 0, 50],
+                         ["3", "Missing", "zzz", "Gone", 10, 0, 0, 0, 10]],
+                        columns=["nipa_line", "pce_category", "commodity", "commodity_desc", "producers_value", "transport", "wholesale", "retail", "purchasers_value"])
+    return bridge.PCEBridge(rows=rows, year=2017, meta={})
+
+def test_commodity_and_pce_prices(two_by_two):
+    m = leontief.PriceModel(two_by_two, pce_bridge=synthetic_bridge(), margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]})
+    r = m.run([shocks.IndustryTax("1", rate=0.1)])
+    c = r.commodity_prices.set_index("code")["pct_change"]
+    assert c["a"] == pytest.approx(0.125) and c["b"] == pytest.approx(0.0492424, abs=1e-6)
+    p = r.pce_prices.set_index("nipa_line")
+    assert p.loc["1", "pct_change"] == pytest.approx(0.10984848, abs=1e-6)       # (80*.125 + 20*.0492424)/100
+    assert p.loc["2", "pct_change"] == pytest.approx(0.0492424, abs=1e-6)
+    assert p.loc["3", "pct_change"] == 0.0
+    assert r.summary["pce_burden"] == pytest.approx(13.44697, abs=1e-4)
+    assert any("zzz" in n for n in r.notes)
+
+def test_bridge_missing_commodity_noted(two_by_two):
+    b = synthetic_bridge(); b.rows.loc[b.rows.nipa_line == "2", "purchasers_value"] = 0
+    r = leontief.PriceModel(two_by_two, pce_bridge=b, margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]}).run([shocks.IndustryTax("1", rate=0.1)])
+    assert r.pce_prices.set_index("nipa_line").loc["2", "pct_change"] == 0.0 and any("purchasers" in n for n in r.notes)
+
+def test_pce_frames_summary_and_notes(two_by_two):
+    rows = synthetic_bridge().rows.iloc[[2, 1, 0]]                                   # lines 3, 2, 1: sorted back by number
+    m = leontief.PriceModel(two_by_two, pce_bridge=bridge.PCEBridge(rows=rows, year=2017, meta={}),
+                            margin_codes={"transport": ["b"], "wholesale": ["b"], "retail": ["b"]})
+    r = m.run([shocks.IndustryTax("1", rate=0.1)])
+    assert list(r.commodity_prices.columns) == ["code", "description", "pct_change"]
+    assert r.commodity_prices["description"].tolist() == ["Alpha", "Beta"]
+    assert list(r.pce_prices.columns) == ["nipa_line", "pce_category", "pct_change", "base_spending", "burden"]
+    assert r.pce_prices["nipa_line"].tolist() == ["1", "2", "3"] and r.pce_prices["base_spending"].tolist() == [100.0, 50.0, 10.0]
+    assert r.summary["pce_share_of_burden"] == pytest.approx(r.summary["pce_burden"] / 10.0)
+    assert len(r.notes) == 1                                                         # one note for "zzz"
+    plain = leontief.PriceModel(two_by_two).run([shocks.IndustryTax("1", rate=0.1)])
+    assert plain.pce_prices is None and plain.summary["pce_burden"] is None and plain.summary["pce_share_of_burden"] is None
+    assert plain.commodity_prices.equals(r.commodity_prices) and plain.notes == []
+
+def test_margin_price_changes(two_by_two):
+    dp_c = pd.Series({"a": 0.1, "b": 0.2})
+    m = leontief.PriceModel(two_by_two, margin_codes={"transport": ["a", "b", "absent"], "wholesale": ["b"], "retail": ["a"]})
+    assert m.margin_price_changes(dp_c) == pytest.approx({"transport": (90 * 0.1 + 110 * 0.2) / 200, "wholesale": 0.2, "retail": 0.1})
+    with pytest.raises(ValueError, match="retail"):
+        leontief.PriceModel(two_by_two, margin_codes={"transport": ["a"], "wholesale": ["b"], "retail": ["absent"]}).margin_price_changes(dp_c)
+    with pytest.raises(ValueError, match="margin_codes"):                             # level "toy" has no built-in margin codes
+        leontief.PriceModel(two_by_two, pce_bridge=synthetic_bridge()).run([shocks.IndustryTax("1", rate=0.1)])
+    assert bridge.MARGIN_CODES["detail"]["retail"][-1] == "4B0000"

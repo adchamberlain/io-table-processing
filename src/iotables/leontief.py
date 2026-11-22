@@ -18,6 +18,23 @@ rates T (seller x buyer). Two formulations:
         as a rate is t_i itself);  A_hat = diag(1 + t) A;  p_hat = (I - A_hat')^-1 v
         No flow taxes, and no burden identity.
 
+Consumer prices (spec 8.5), from the industry price changes dp = p_hat - 1:
+
+    dp_c = market_shares' dp       commodity price changes (producers' prices),
+                                   0 for a commodity with no output
+    m_t, m_w, m_r                  transportation, wholesale and retail margin
+                                   price changes: output-weighted means of dp_c
+                                   over the margin commodities (`margin_codes`)
+    dP_k = sum_r (PV_r dp_c[r] + TC_r m_t + WM_r m_w + RM_r m_r) / sum_r PurchV_r
+                                   PCE price change of NIPA line k; r runs
+                                   over line k's bridge rows, dp_c[r] is the
+                                   price change of row r's commodity
+
+PV, TC, WM, RM and PurchV are the bridge's producers' value, transportation
+costs, wholesale and retail margins and purchasers' value. A bridge commodity
+that is not in the table gets dp_c = 0, a line with no purchasers' value dP = 0,
+and the run's notes say so.
+
 Every system is solved with numpy.linalg.solve; no inverse is formed. Price
 changes are fractions (0.125 = 12.5 percent); dollars are millions.
 """
@@ -28,6 +45,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from iotables.bridge import MARGIN_CODES, PCEBridge
 from iotables.shocks import FlowTax, IndustryTax, Shock, industry_dollars, to_tau_T
 from iotables.square import SquareIOTable
 
@@ -40,13 +58,19 @@ class PriceResult:
     """The outcome of `PriceModel.run` ($ millions; price changes as fractions).
 
     `industry_prices`: columns code, description, pct_change, one row per
-    industry in table order. `burden_by_final_demand`: columns code,
-    description, base_spending (the column's total), burden (dp' F, the added
-    cost of the column's purchases). `summary`: formulation, total_tax,
-    final_demand_burden (the burdens' sum), identity_residual
-    (final_demand_burden - total_tax) and pce_burden. `commodity_prices`,
-    `pce_prices` and `summary["pce_burden"]` are None: not computed yet.
-    `shocks` is the list that was run; `notes` holds messages about the run.
+    industry in table order. `commodity_prices`: columns code, description,
+    pct_change, one row per commodity in market-share column order.
+    `pce_prices` (None without a PCE bridge): columns nipa_line, pce_category,
+    pct_change, base_spending (the line's purchasers' value), burden
+    (pct_change x base_spending), one row per NIPA line, sorted by line number.
+    `burden_by_final_demand`: columns code, description, base_spending (the
+    column's total), burden (dp' F, the added cost of the column's purchases).
+    `summary`: formulation, total_tax, final_demand_burden (the burdens' sum),
+    identity_residual (final_demand_burden - total_tax), pce_burden (the PCE
+    lines' burdens' sum) and pce_share_of_burden (pce_burden / total_tax); the
+    last two are None without a bridge, and the share is None when total_tax is
+    0. `shocks` is the list that was run; `notes` holds messages about the run
+    (bridge commodities not in the table, lines with no purchasers' value).
     """
 
     industry_prices: pd.DataFrame
@@ -61,16 +85,18 @@ class PriceResult:
 class PriceModel:
     """The price model on `sq` in one `formulation` ("output_tax" or "wp6").
 
-    `pce_bridge` and `margin_codes` are stored for the consumer-price stage and
-    not used yet. Raises ValueError for an unknown formulation, an industry with
-    zero output (its coefficients are undefined) or baseline prices more than
-    1e-9 from 1.
+    With a `pce_bridge`, `run` also gives PCE price changes, which need the
+    margin commodities: `margin_codes` maps "transport", "wholesale" and
+    "retail" to commodity codes, and defaults to `bridge.MARGIN_CODES` for the
+    table's `meta["level"]` (None when that level has no entry). Raises
+    ValueError for an unknown formulation, an industry with zero output (its
+    coefficients are undefined) or baseline prices more than 1e-9 from 1.
     """
 
     def __init__(
         self,
         sq: SquareIOTable,
-        pce_bridge: object | None = None,
+        pce_bridge: PCEBridge | None = None,
         formulation: str = "output_tax",
         margin_codes: dict[str, list[str]] | None = None,
     ):
@@ -79,7 +105,8 @@ class PriceModel:
         self.sq = sq
         self.pce_bridge = pce_bridge
         self.formulation = formulation
-        self.margin_codes = margin_codes
+        self.margin_codes = (margin_codes if margin_codes is not None
+                             else MARGIN_CODES.get(sq.meta.get("level")))
         industries = sq.industries
         y = sq.y.loc[industries]
         if (y == 0).any():
@@ -100,7 +127,8 @@ class PriceModel:
         """Prices and burdens after `shocks` (they add; see `shocks.py`).
 
         Raises ValueError for a flow tax under "wp6", or a dollar amount there
-        on an industry with no intermediate sales; KeyError for an unknown code.
+        on an industry with no intermediate sales; KeyError for an unknown code;
+        with a bridge, ValueError as in `margin_price_changes`.
         """
         shocks = list(shocks)
         if self.formulation == "output_tax":
@@ -112,14 +140,24 @@ class PriceModel:
         F = self.sq.F.loc[industries]
         burden = dp @ F
         final_demand_burden = float(burden.sum())
+        dp_c = self.commodity_price_changes(dp)
+        pce_prices, pce_burden, pce_share, notes = None, None, None, []
+        if self.pce_bridge is not None:
+            pce_prices, notes = self.pce_price_changes(dp_c, self.margin_price_changes(dp_c))
+            pce_burden = float(pce_prices["burden"].sum())
+            pce_share = pce_burden / total_tax if total_tax != 0 else None
         return PriceResult(
             industry_prices=pd.DataFrame({
                 "code": industries,
                 "description": list(self.sq.industry_labels.loc[industries]),
                 "pct_change": dp.loc[industries].to_numpy(),
             }),
-            commodity_prices=None,
-            pce_prices=None,
+            commodity_prices=pd.DataFrame({
+                "code": list(dp_c.index),
+                "description": list(self.sq.commodity_labels.loc[dp_c.index]),
+                "pct_change": dp_c.to_numpy(),
+            }),
+            pce_prices=pce_prices,
             burden_by_final_demand=pd.DataFrame({
                 "code": list(F.columns),
                 "description": list(self.sq.final_demand_labels.loc[F.columns]),
@@ -131,11 +169,83 @@ class PriceModel:
                 "total_tax": total_tax,
                 "final_demand_burden": final_demand_burden,
                 "identity_residual": final_demand_burden - total_tax,
-                "pce_burden": None,
+                "pce_burden": pce_burden,
+                "pce_share_of_burden": pce_share,
             },
             shocks=shocks,
-            notes=[],
+            notes=notes,
         )
+
+    def commodity_price_changes(self, dp: pd.Series) -> pd.Series:
+        """dp_c = market_shares' dp, by commodity in market-share column order.
+
+        Industries align by code. A commodity whose output (`meta["commodity_output"]`)
+        is not positive has no producers to average over and gets 0.
+        """
+        shares = self.sq.market_shares
+        dp_c = shares.T @ dp
+        q = self.sq.meta["commodity_output"].loc[shares.columns]
+        return dp_c.where(q > 0, 0.0)
+
+    def margin_price_changes(self, dp_c: pd.Series) -> dict[str, float]:
+        """The price change of each margin in `margin_codes`: the mean of `dp_c` over
+        its commodities, weighted by commodity output (`meta["commodity_output"]`).
+
+        Codes not in `dp_c`, or without output, are ignored. Raises ValueError when
+        there are no margin codes, or when none of a margin's codes is left.
+        """
+        if self.margin_codes is None:
+            raise ValueError(f"no built-in margin codes for table level {self.sq.meta.get('level')!r}; "
+                             "pass margin_codes={'transport': [...], 'wholesale': [...], 'retail': [...]}")
+        q = self.sq.meta["commodity_output"]
+        margins = {}
+        for margin, codes in self.margin_codes.items():
+            present = [c for c in codes if c in dp_c.index and c in q.index and q[c] > 0]
+            if not present:
+                raise ValueError(f"none of the {margin} margin commodities {codes} is in the table with output")
+            weights = q.loc[present]
+            margins[margin] = float((dp_c.loc[present] * weights).sum() / weights.sum())
+        return margins
+
+    def pce_price_changes(self, dp_c: pd.Series, margins: dict[str, float]) -> tuple[pd.DataFrame, list[str]]:
+        """PCE price changes by NIPA line from `self.pce_bridge` (module docstring), and notes.
+
+        `margins` holds the "transport", "wholesale" and "retail" price changes.
+        A bridge commodity not in `dp_c` gets dp_c = 0 (one note per code); a line
+        whose purchasers' value sums to 0 gets 0 (one note per line). The frame has
+        columns nipa_line, pce_category, pct_change, base_spending (the line's
+        purchasers' value) and burden (pct_change x base_spending), sorted by line
+        number when every line is a number and as text otherwise.
+        """
+        rows = self.pce_bridge.rows
+        notes = []
+        missing = rows.loc[~rows["commodity"].isin(dp_c.index)]
+        for code, group in missing.groupby("commodity", sort=False):
+            notes.append(f"PCE bridge commodity {code!r} ({group['commodity_desc'].iloc[0]}) is not in the "
+                         f"table; its producers' value gets a price change of 0 "
+                         f"(NIPA lines {', '.join(pd.unique(group['nipa_line']))})")
+        added = (rows["producers_value"] * rows["commodity"].map(dp_c).fillna(0.0)
+                 + rows["transport"] * margins["transport"]
+                 + rows["wholesale"] * margins["wholesale"]
+                 + rows["retail"] * margins["retail"])
+        lines = self.pce_bridge.categories().set_index("nipa_line")
+        added = added.groupby(rows["nipa_line"], sort=False).sum().loc[lines.index]
+        spending = lines["purchasers_value"]
+        zero = spending == 0
+        for line in lines.index[zero]:
+            notes.append(f"NIPA line {line} ({lines.loc[line, 'pce_category']}) has no purchasers' value; "
+                         "its price change is set to 0")
+        pct_change = (added / spending.where(~zero, 1.0)).where(~zero, 0.0)
+        frame = pd.DataFrame({
+            "nipa_line": list(lines.index),
+            "pce_category": lines["pce_category"].to_numpy(),
+            "pct_change": pct_change.to_numpy(),
+            "base_spending": spending.to_numpy(),
+            "burden": (pct_change * spending).to_numpy(),
+        })
+        numeric = frame["nipa_line"].str.fullmatch("[0-9]+").all()
+        frame = frame.sort_values("nipa_line", key=(lambda s: s.astype(int)) if numeric else None, kind="stable")
+        return frame.reset_index(drop=True), notes
 
     def _output_tax(self, shocks: list) -> tuple[pd.Series, float]:
         """p_hat and the tax collected: output taxes tau * y plus flow taxes at the sellers' new prices."""
