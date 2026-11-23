@@ -83,15 +83,16 @@ def test_baseline_uses_the_value_added_rows(two_by_two):
     with pytest.raises(ValueError, match=r"baseline prices are not 1 .*industry '2'"):  # p - 1 = [3.1e-9, 9.4e-9]
         leontief.PriceModel(dataclasses.replace(two_by_two, V=V))
 
-def test_price_model_checks_a_table_read_without_its_csv_folder(two_by_two):
-    frame = two_by_two.to_frame()
-    back = square.SquareIOTable.from_frame(frame)                                    # no market shares, no commodity output
-    assert back.check_identities()["shares_minus_one"] is None
-    r = leontief.PriceModel(back).run([shocks.IndustryTax("1", rate=0.1)])
+def test_price_model_on_a_table_without_market_shares(two_by_two):
+    bare = dataclasses.replace(two_by_two, meta={}, market_shares=two_by_two.market_shares.iloc[:, :0],
+                               N=two_by_two.N.iloc[:, :0])                           # no market shares, no commodity output
+    assert bare.check_identities()["shares_minus_one"] is None
+    r = leontief.PriceModel(bare).run([shocks.IndustryTax("1", rate=0.1)])
     pd.testing.assert_frame_equal(r.industry_prices, leontief.PriceModel(two_by_two).run([shocks.IndustryTax("1", rate=0.1)]).industry_prices)
-    frame.loc["1", "2"] += 1.0                                                       # Z no longer adds up to y
+    assert r.commodity_prices is None
+    Z = bare.Z.copy(); Z.loc["1", "2"] += 1.0                                        # Z no longer adds up to y
     with pytest.raises(ValueError, match="y_minus_rowsum"):
-        leontief.PriceModel(square.SquareIOTable.from_frame(frame))
+        leontief.PriceModel(dataclasses.replace(bare, Z=Z))
 
 def test_price_model_rejects_bad_margin_codes(two_by_two):
     b = synthetic_bridge()

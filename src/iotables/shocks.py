@@ -16,6 +16,14 @@ on the sale from seller i to buyer j. Design spec section 8.2:
                                         adds rate x V[component, j] / y_j for
                                         each listed industry (default all)
 
+    ImportTariff(code, rate | dollars)  raises the import price of commodity
+                                        `code` ("all" for every import) by rate,
+                                        or by dollars / imports of it; needs a
+                                        table built with BEA's import matrix
+    IndustryPrice(code, change)         fixes industry i's price change at
+                                        `change`; the model finds the cost on
+                                        the industry that produces it
+
 Shocks add: the same industry or flow named twice accumulates. `industry_dollars`
 gives the dollars each industry bears (what the price model's WP6 mode takes),
 `to_tau_T` the (tau, T) pair. Codes are aligned by name, an unknown code raises
@@ -87,7 +95,28 @@ class ValueAddedTax:
     industries: tuple[str, ...] | None = None
 
 
-Shock = IndustryTax | CommodityTax | FlowTax | ValueAddedTax
+@dataclass(frozen=True)
+class ImportTariff:
+    """A tariff on imports of commodity `code` ("all": every import): `rate` (the rise in the import price,
+    a fraction) or `dollars` ($ millions collected on base-year imports); exactly one."""
+
+    code: str
+    rate: float | None = None
+    dollars: float | None = None
+
+    def __post_init__(self):
+        _require_exactly_one(self)
+
+
+@dataclass(frozen=True)
+class IndustryPrice:
+    """The price of industry `code` rises by exactly `change` (a fraction), whatever else lands on it."""
+
+    code: str
+    change: float
+
+
+Shock = IndustryTax | CommodityTax | FlowTax | ValueAddedTax | ImportTariff | IndustryPrice
 
 
 def _check_industry(code: str, sq: SquareIOTable) -> None:
@@ -127,9 +156,39 @@ def industry_dollars(shocks: Sequence[Shock], sq: SquareIOTable) -> pd.Series:
             for code in targets:
                 _check_industry(code, sq)
             dollars.loc[targets] += shock.rate * sq.V.loc[shock.component, targets]
-        elif not isinstance(shock, FlowTax):
+        elif not isinstance(shock, (FlowTax, ImportTariff, IndustryPrice)):
             raise TypeError(f"not a shock: {shock!r}")
     return dollars
+
+
+def import_price_changes(shocks: Sequence[Shock], sq: SquareIOTable) -> pd.Series:
+    """The rise in the import price of each imported commodity from the `ImportTariff` shocks (fractions).
+
+    Indexed by the commodities of `sq.imported_inputs`; empty for a table without
+    an import split. A tariff in dollars becomes the rate that collects them on
+    the commodity's base-year imports by all buyers (`sq.total_imports`). Raises
+    ValueError for a tariff on a table without an import split or a dollar
+    tariff on a commodity with no imports, and KeyError for an unknown commodity.
+    """
+    tariffs = [s for s in shocks if isinstance(s, ImportTariff)]
+    if sq.imported_inputs is None:
+        if tariffs:
+            raise ValueError(f"{tariffs[0]!r} needs a table built with BEA's import matrix "
+                             "(build_square_table(..., imports=...))")
+        return pd.Series(dtype=float)
+    total = sq.total_imports
+    dp_m = pd.Series(0.0, index=sq.imported_inputs.index)
+    for shock in tariffs:
+        if shock.code != "all" and shock.code not in dp_m.index:
+            raise KeyError(f"unknown imported commodity code {shock.code!r}")
+        codes = list(dp_m.index) if shock.code == "all" else [shock.code]
+        rate = shock.rate
+        if rate is None:
+            if total.loc[codes].sum() == 0:
+                raise ValueError(f"{shock!r}: there are no imports of {shock.code!r} to carry a dollar amount")
+            rate = shock.dollars / total.loc[codes].sum()
+        dp_m.loc[codes] += rate
+    return dp_m
 
 
 def to_tau_T(shocks: Sequence[Shock], sq: SquareIOTable) -> tuple[pd.Series, pd.DataFrame]:
@@ -194,13 +253,18 @@ def eia_co2_by_fuel(year: int, data_dir: Path = RAW_DIR, force: bool = False, pa
 
 
 def carbon_price(dollars_per_ton_co2: float, emissions_year: int, coverage: str = "upstream", level: str = "detail",
-                 data_dir: Path = RAW_DIR, path: Path | None = None, force: bool = False) -> list[IndustryTax]:
+                 data_dir: Path = RAW_DIR, path: Path | None = None, force: bool = False,
+                 sq: SquareIOTable | None = None) -> list[IndustryTax | ImportTariff]:
     """A carbon price of `dollars_per_ton_co2` on `emissions_year`'s CO2, as industry taxes ($ millions).
 
     Upstream coverage taxes each fossil fuel where it is extracted: million metric
     tons x $/ton = $ millions, put on the industry `CARBON_INDUSTRIES` names for
     `level`. Fuels that share an industry (oil and gas) are summed into one tax.
-    Returns one `IndustryTax` per industry, sorted by code. Raises
+    Returns one `IndustryTax` per industry, sorted by code. With `sq`, a table
+    with an import split, each fuel's dollars fall at one rate on domestic output
+    and on imports of the commodity with the industry's code: the imported part,
+    imports / (commodity output + imports), becomes an `ImportTariff` that
+    follows the industry's tax. Raises
     NotImplementedError for any other `coverage` and KeyError for an unknown `level`.
     `data_dir`, `path` and `force` are as in `eia_co2_by_fuel`.
     """
@@ -212,4 +276,12 @@ def carbon_price(dollars_per_ton_co2: float, emissions_year: int, coverage: str 
     dollars: dict[str, float] = {}
     for fuel, code in CARBON_INDUSTRIES[level].items():
         dollars[code] = dollars.get(code, 0.0) + emissions[fuel] * dollars_per_ton_co2
-    return [IndustryTax(code, dollars=dollars[code]) for code in sorted(dollars)]
+    out: list[IndustryTax | ImportTariff] = []
+    total = sq.total_imports if sq is not None else pd.Series(dtype=float)
+    for code in sorted(dollars):
+        imported = float(total.get(code, 0.0))
+        share = imported / (float(sq.meta["commodity_output"][code]) + imported) if imported else 0.0
+        out.append(IndustryTax(code, dollars=dollars[code] * (1 - share)))
+        if share > 0:
+            out.append(ImportTariff(code, dollars=dollars[code] * share))
+    return out

@@ -10,18 +10,27 @@ The table's identities (`validate.check_identities`) are checked first, and
 the baseline check holds only when each column's inputs and value added sum
 to the industry's output.
 
-Shocks (`shocks.py`) become output taxes tau (per $ of output) and flow-tax
-rates T (seller x buyer). Two formulations:
+A table with an import split (`sq.imported_inputs`) has a third cost: imported
+inputs, B = U_m diag(y)^-1 by imported commodity, at import prices p_m (1 in the
+base year), so p = (I - A')^-1 (v + B' p_m). Without a split B is zero.
+
+Shocks (`shocks.py`) become output taxes tau (per $ of output), flow-tax rates
+T (seller x buyer) and import price changes dp_m (tariffs). Two formulations:
 
     "output_tax" (default, spec 8.3)
-        A_hat = A * (1 + T) elementwise;  p_hat = (I - A_hat')^-1 (v + tau)
-        The price increase on final demand equals the tax collected, with flow
-        taxes valued at the sellers' new prices.
+        A_hat = A * (1 + T) elementwise;  p_hat = (I - A_hat')^-1 (v + tau + B' p_m)
+        The price increase on final demand, domestic and imported, equals the
+        tax collected, with flow taxes valued at the sellers' new prices and
+        tariffs on base-year imports. An `IndustryPrice` shock fixes an
+        industry's price change: with L = (I - A_hat')^-1 and S the fixed
+        industries, tau_S solves L[S, S] tau_S = (1 + change) - p_hat[S]
+        without it; the revenue tau_S y_S stays with those industries.
     "wp6" (spec 8.4), only to reproduce the 2009 Tax Foundation WP6 results
         t_i = dollars_i / industry i's intermediate sales (an IndustryTax given
         as a rate is t_i itself);  A_hat = diag(1 + t) A;  p_hat = (I - A_hat')^-1 v
-        No flow taxes, no tax on an industry without intermediate sales (an
-        error, in dollars or as a rate), and no burden identity.
+        No flow taxes, tariffs or fixed prices, no tax on an industry without
+        intermediate sales (an error, in dollars or as a rate), and no burden
+        identity.
 
 Consumer prices (spec 8.5), from the industry price changes dp = p_hat - 1:
 
@@ -38,21 +47,26 @@ Consumer prices (spec 8.5), from the industry price changes dp = p_hat - 1:
 PV, TC, WM, RM and PurchV are the bridge's producers' value, transportation
 costs, wholesale and retail margins and purchasers' value. A bridge commodity
 that is not in the table gets dp_c = 0, a line with no purchasers' value dP = 0,
-and the run's notes say so.
+and the run's notes say so. With an import split, dp_c[r] is replaced by
+(1 - m) dp_c[r] + m dp_m[r], m the imported share of personal consumption of the
+commodity (`sq.pce_import_share`), the same for every line that buys it.
 
 Every system is solved with numpy.linalg.solve; no inverse is formed. Price
 changes are fractions (0.125 = 12.5 percent); dollars are millions.
 """
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from iotables import validate
 from iotables.bridge import MARGIN_CODES, PCEBridge
-from iotables.shocks import FlowTax, IndustryTax, Shock, industry_dollars, to_tau_T
+from iotables.shocks import (FlowTax, ImportTariff, IndustryPrice, IndustryTax, Shock, import_price_changes,
+                             industry_dollars, to_tau_T)
 from iotables.square import SquareIOTable
 
 FORMULATIONS = ("output_tax", "wp6")
@@ -88,6 +102,26 @@ class PriceResult:
     shocks: list
     notes: list[str]
 
+    def to_csv(self, directory: Path) -> dict[str, Path]:
+        """Write the result as CSV files in `directory`; returns {name: path}.
+
+        industry_prices, commodity_prices, pce_prices and burden_by_final_demand
+        (the frames; one the run did not produce is not written), summary
+        (columns item, value) and shocks (one row per shock: its type and fields).
+        """
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        frames = {name: getattr(self, name) for name in
+                  ("industry_prices", "commodity_prices", "pce_prices", "burden_by_final_demand")}
+        frames["summary"] = pd.Series(self.summary, name="value").rename_axis("item").reset_index()
+        frames["shocks"] = pd.DataFrame([{"type": type(s).__name__, **dataclasses.asdict(s)} for s in self.shocks])
+        paths = {}
+        for name, frame in frames.items():
+            if frame is not None:
+                paths[name] = directory / f"{name}.csv"
+                frame.to_csv(paths[name], index=False)
+        return paths
+
 
 class PriceModel:
     """The price model on `sq` in one `formulation` ("output_tax" or "wp6").
@@ -97,7 +131,6 @@ class PriceModel:
     and "retail" to commodity codes, at least one of each with positive
     commodity output in the table, and defaults to `bridge.MARGIN_CODES` for
     the table's `meta["level"]`. A table without `meta["commodity_output"]`
-    (one read back without its market shares, `SquareIOTable.from_frame`)
     gives industry prices and burdens only.
 
     Every table is checked on construction: its identities
@@ -137,6 +170,9 @@ class PriceModel:
         Z = sq.Z.loc[industries, industries]
         self.A = Z.div(y, axis=1)
         self.v = sq.V.loc[:, industries].sum(axis=0) / y
+        # Imported inputs per $ of output, by imported commodity; None without an import split.
+        self.B = None if sq.imported_inputs is None else sq.imported_inputs.loc[:, industries].div(y, axis=1)
+        self.imported_cost = pd.Series(0.0, index=industries) if self.B is None else self.B.sum(axis=0)
         deviation = (self.baseline_prices() - 1).abs()
         if not (deviation <= BASELINE_TOL).all():  # written so that NaN fails too
             worst = deviation.fillna(np.inf).idxmax()
@@ -162,8 +198,8 @@ class PriceModel:
                                  "with positive output")
 
     def baseline_prices(self) -> pd.Series:
-        """p = (I - A')^-1 v, by industry: ones for a balanced table."""
-        return self._solve(self.A, self.v)
+        """p = (I - A')^-1 (v + B' 1), by industry: ones for a balanced table."""
+        return self._solve(self.A, self.v + self.imported_cost)
 
     def run(self, shocks: Sequence[Shock]) -> PriceResult:
         """Prices and burdens after `shocks` (they add; see `shocks.py`).
@@ -174,19 +210,25 @@ class PriceModel:
         `margin_price_changes`.
         """
         shocks = list(shocks)
+        dp_m = import_price_changes(shocks, self.sq)
         if self.formulation == "output_tax":
-            p_hat, total_tax = self._output_tax(shocks)
+            p_hat, total_tax = self._output_tax(shocks, dp_m)
         else:
             p_hat, total_tax = self._wp6(shocks)
         dp = p_hat - 1
         industries = list(self.A.index)
         F = self.sq.F.loc[industries]
         burden = dp @ F
+        base_spending = F.sum(axis=0)
+        if self.sq.imported_final is not None:  # final users' own imports, at import prices
+            F_m = self.sq.imported_final
+            burden = burden.add(dp_m.loc[F_m.index] @ F_m, fill_value=0.0).loc[F.columns]
+            base_spending = base_spending.add(F_m.sum(axis=0), fill_value=0.0).loc[F.columns]
         final_demand_burden = float(burden.sum())
         dp_c = self.commodity_price_changes(dp) if "commodity_output" in self.sq.meta else None
         pce_prices, pce_burden, pce_share, notes = None, None, None, []
         if self.pce_bridge is not None:
-            pce_prices, notes = self.pce_price_changes(dp_c, self.margin_price_changes(dp_c))
+            pce_prices, notes = self.pce_price_changes(dp_c, self.margin_price_changes(dp_c), dp_m)
             pce_burden = float(pce_prices["burden"].sum())
             pce_share = pce_burden / total_tax if total_tax != 0 else None
         return PriceResult(
@@ -195,16 +237,12 @@ class PriceModel:
                 "description": list(self.sq.industry_labels.loc[industries]),
                 "price_change": dp.loc[industries].to_numpy(),
             }),
-            commodity_prices=None if dp_c is None else pd.DataFrame({
-                "code": list(dp_c.index),
-                "description": list(self.sq.commodity_labels.loc[dp_c.index]),
-                "price_change": dp_c.to_numpy(),
-            }),
+            commodity_prices=None if dp_c is None else self._commodity_prices(dp_c, dp_m),
             pce_prices=pce_prices,
             burden_by_final_demand=pd.DataFrame({
                 "code": list(F.columns),
                 "description": list(self.sq.final_demand_labels.loc[F.columns]),
-                "base_spending": F.sum(axis=0).to_numpy(),
+                "base_spending": base_spending.to_numpy(),
                 "burden": burden.loc[F.columns].to_numpy(),
             }),
             summary={
@@ -218,6 +256,25 @@ class PriceModel:
             shocks=shocks,
             notes=notes,
         )
+
+    def _commodity_prices(self, dp_c: pd.Series, dp_m: pd.Series) -> pd.DataFrame:
+        """The commodity price frame: code, description, price_change (domestic producers'); a table with an
+        import split with its commodity shares adds import_price_change and pce_import_share, one row per
+        imported commodity (noncomparable imports included, with a domestic price change of 0)."""
+        share = self.sq.pce_import_share
+        if share is None:
+            return pd.DataFrame({
+                "code": list(dp_c.index),
+                "description": list(self.sq.commodity_labels.loc[dp_c.index]),
+                "price_change": dp_c.to_numpy(),
+            })
+        return pd.DataFrame({
+            "code": list(dp_m.index),
+            "description": list(self.sq.commodity_labels.reindex(dp_m.index)),
+            "price_change": dp_c.reindex(dp_m.index, fill_value=0.0).to_numpy(),
+            "import_price_change": dp_m.to_numpy(),
+            "pce_import_share": share.reindex(dp_m.index, fill_value=0.0).to_numpy(),
+        })
 
     def commodity_price_changes(self, dp: pd.Series) -> pd.Series:
         """dp_c = market_shares' dp, by commodity in market-share column order.
@@ -250,10 +307,13 @@ class PriceModel:
             margins[margin] = float((dp_c.loc[present] * weights).sum() / weights.sum())
         return margins
 
-    def pce_price_changes(self, dp_c: pd.Series, margins: dict[str, float]) -> tuple[pd.DataFrame, list[str]]:
+    def pce_price_changes(self, dp_c: pd.Series, margins: dict[str, float],
+                          dp_m: pd.Series | None = None) -> tuple[pd.DataFrame, list[str]]:
         """PCE price changes by NIPA line from `self.pce_bridge` (module docstring), and notes.
 
         `margins` holds the "transport", "wholesale" and "retail" price changes.
+        `dp_m` holds the import price changes of a table with an import split, whose
+        commodities are priced at the blend given in the module docstring.
         A bridge commodity not in `dp_c` gets dp_c = 0 (one note per code); a line
         whose purchasers' value sums to 0 gets 0 (one note per line). The frame has
         columns nipa_line, pce_category, price_change, base_spending (the line's
@@ -262,12 +322,19 @@ class PriceModel:
         """
         rows = self.pce_bridge.rows
         notes = []
-        missing = rows.loc[~rows["commodity"].isin(dp_c.index)]
+        share = self.sq.pce_import_share
+        blended = share is not None and dp_m is not None
+        known = dp_c.index.union(dp_m.index) if blended else dp_c.index
+        missing = rows.loc[~rows["commodity"].isin(known)]
         for code, group in missing.groupby("commodity", sort=False):
             notes.append(f"PCE bridge commodity {code!r} ({group['commodity_desc'].iloc[0]}) is not in the "
                          f"table; its producers' value gets a price change of 0 "
                          f"(NIPA lines {', '.join(pd.unique(group['nipa_line']))})")
-        added = (rows["producers_value"] * rows["commodity"].map(dp_c).fillna(0.0)
+        commodity_change = rows["commodity"].map(dp_c).fillna(0.0)
+        if blended:
+            m = rows["commodity"].map(share).fillna(0.0)
+            commodity_change = (1 - m) * commodity_change + m * rows["commodity"].map(dp_m).fillna(0.0)
+        added = (rows["producers_value"] * commodity_change
                  + rows["transport"] * margins["transport"]
                  + rows["wholesale"] * margins["wholesale"]
                  + rows["retail"] * margins["retail"])
@@ -290,20 +357,41 @@ class PriceModel:
         frame = frame.sort_values("nipa_line", key=(lambda s: s.astype(int)) if numeric else None, kind="stable")
         return frame.reset_index(drop=True), notes
 
-    def _output_tax(self, shocks: list) -> tuple[pd.Series, float]:
-        """p_hat and the tax collected: output taxes tau * y plus flow taxes at the sellers' new prices."""
+    def _output_tax(self, shocks: list, dp_m: pd.Series) -> tuple[pd.Series, float]:
+        """p_hat and the tax collected: output taxes tau * y, flow taxes at the sellers' new prices and
+        tariffs dp_m on base-year imports; `IndustryPrice` shocks fix their industries' prices."""
         tau, T = to_tau_T(shocks, self.sq)
-        p_hat = self._solve(self.A * (1 + T), self.v + tau)
+        cost = self.v + self.imported_cost
+        tariff_revenue = 0.0
+        if self.B is not None:
+            cost = cost + self.B.T @ dp_m.loc[self.B.index]
+            tariff_revenue = float((dp_m * self.sq.total_imports).sum())
+        A_hat = self.A * (1 + T)
+        p_hat = self._solve(A_hat, cost + tau)
+        targets = {}
+        for shock in shocks:
+            if isinstance(shock, IndustryPrice):
+                if shock.code not in tau.index:
+                    raise KeyError(f"unknown industry code {shock.code!r}")
+                targets[shock.code] = shock.change
+        if targets:
+            fixed = list(targets)
+            positions = [tau.index.get_loc(code) for code in fixed]
+            eye = np.eye(len(tau))
+            L_columns = np.linalg.solve(eye - A_hat.to_numpy().T, eye[:, positions])
+            wanted = 1 + pd.Series(targets).loc[fixed]
+            tau.loc[fixed] += np.linalg.solve(L_columns[positions, :], (wanted - p_hat.loc[fixed]).to_numpy())
+            p_hat = self._solve(A_hat, cost + tau)
         flow_tax = (T * self.sq.Z).mul(p_hat, axis=0).to_numpy().sum()
-        return p_hat, float((tau * self.sq.y).sum() + flow_tax)
+        return p_hat, float((tau * self.sq.y).sum() + flow_tax + tariff_revenue)
 
     def _wp6(self, shocks: list) -> tuple[pd.Series, float]:
         """p_hat and the tax t * intermediate sales, with t per industry as in the module docstring."""
         t = pd.Series(0.0, index=self.A.index)
         dollar_shocks = []
         for shock in shocks:
-            if isinstance(shock, FlowTax):
-                raise ValueError(f"formulation 'wp6' takes no flow taxes, got {shock!r}")
+            if isinstance(shock, (FlowTax, ImportTariff, IndustryPrice)):
+                raise ValueError(f"formulation 'wp6' takes no flow taxes, tariffs or fixed prices, got {shock!r}")
             if isinstance(shock, IndustryTax) and shock.rate is not None:
                 if shock.code not in t.index:
                     raise KeyError(f"unknown industry code {shock.code!r}")
@@ -318,7 +406,7 @@ class PriceModel:
                              f"sales, and these industries have none: {list(stranded.index[stranded])}")
         live = sales != 0
         t.loc[live] += dollars[live] / sales[live]
-        p_hat = self._solve(self.A.mul(1 + t, axis=0), self.v)
+        p_hat = self._solve(self.A.mul(1 + t, axis=0), self.v + self.imported_cost)
         return p_hat, float((t * sales).sum())
 
     @staticmethod

@@ -12,7 +12,7 @@ _BEA_UNDERLYING = "https://apps.bea.gov/industry/xls/underlying-estimates"
 
 # Keyed by (table, redefinitions). Make and use come in both redefinition
 # variants; the remaining files have a single version, so their second key is
-# "any" (margins exist only "before"). The make/use files are the "2017_Detail"
+# "any" (margins and the import matrix exist only "before"). The make/use files are the "2017_Detail"
 # workbooks (sheets 2007, 2012, 2017); the older "..._DET.xlsx" names under
 # io-annual (last modified 2021) hold only 2007 and 2012.
 BEA_DETAIL_FILES: dict[tuple[str, str], str] = {
@@ -21,6 +21,7 @@ BEA_DETAIL_FILES: dict[tuple[str, str], str] = {
     ("make", "before"): f"{_BEA_IO}/IOMake_Before_Redefinitions_2017_Detail.xlsx",
     ("use", "before"): f"{_BEA_IO}/IOUse_Before_Redefinitions_PRO_2017_Detail.xlsx",
     ("ixi_tr", "any"): f"{_BEA_IO}/IxI_TR_2017_PRO_DET.xlsx",
+    ("import_matrix", "before"): f"{_BEA_IO}/ImportMatrices_Before_Redefinitions_DET_2017.xlsx",
     ("pce_bridge", "any"): f"{_BEA_UNDERLYING}/PCEBridge_2017_DET.xlsx",
     ("margins", "before"): f"{_BEA_UNDERLYING}/Margins_Before_Redefinitions_2017_DET.xlsx",
 }

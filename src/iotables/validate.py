@@ -27,11 +27,11 @@ def _max_abs(residual: pd.Series) -> float:
 def check_identities(sq: SquareIOTable, tol: float = 1e-6) -> dict[str, float | None]:
     """Check a square table's identities; return the residuals ($ millions).
 
-    - "row_minus_col": max |(Z + F row total) - (Z + V column total)| per industry.
+    - "row_minus_col": max |(Z + F row total) - (Z + V column total)| per industry;
+      the column total includes the imported inputs of a table with an import split.
     - "shares_minus_one": max |column sum of market_shares - 1| over commodities
       with nonzero output (`meta["commodity_output"]`); None, and not checked,
-      when the table has no commodity output or no market shares (one read back
-      with `SquareIOTable.from_frame` without its CSV folder).
+      when the table has no commodity output or no market shares.
     - "y_minus_rowsum": max |y - (Z + F row total)|.
 
     Raises ValueError if any checked residual exceeds `tol` or is NaN, or when
@@ -39,6 +39,8 @@ def check_identities(sq: SquareIOTable, tol: float = 1e-6) -> dict[str, float | 
     """
     row_total = sq.Z.sum(axis=1) + sq.F.sum(axis=1)
     col_total = sq.Z.sum(axis=0) + sq.V.sum(axis=0)
+    if sq.imported_inputs is not None:  # imported inputs are a cost alongside domestic inputs and value added
+        col_total = col_total + sq.imported_inputs.sum(axis=0)
     shares_residual = None
     if "commodity_output" in sq.meta and not sq.market_shares.empty:
         share_sums = sq.market_shares.sum(axis=0)

@@ -280,6 +280,34 @@ class UseTable:
         return list(self.intermediate.index)
 
 
+@dataclass
+class ImportMatrix:
+    """BEA import matrix: the imported part of each cell of the use table ($ millions).
+
+    `intermediate` is commodities x industries and `final_demand` commodities x
+    F-codes, in the use table's layout. BEA publishes it before redefinitions
+    only. Its imports column is minus the rest of the row, so each row sums to
+    zero up to BEA's rounding.
+    """
+
+    intermediate: pd.DataFrame
+    final_demand: pd.DataFrame
+    meta: dict
+
+    @classmethod
+    def from_grid(cls, grid: BeaGrid, meta: dict | None = None) -> "ImportMatrix":
+        """Split an import-matrix grid by code, as `UseTable.from_grid` does."""
+        values = grid.values
+        commodities = [c for c in values.index if c not in _VALUE_ADDED_CODES and not c.startswith("T0")]
+        final_demand = [c for c in values.columns if c.startswith("F")]
+        industries = [c for c in values.columns if not c.startswith(("F", "T0"))]
+        return cls(
+            intermediate=values.loc[commodities, industries],
+            final_demand=values.loc[commodities, final_demand],
+            meta=dict(meta or {}),
+        )
+
+
 def _read_year_sheet(path: Path, year: int | str) -> tuple[BeaGrid, dict]:
     """Read the sheet for `year` ("latest" = the newest year sheet) and its meta."""
     years = list_year_sheets(path)
@@ -311,10 +339,35 @@ def parse_use(path: Path, year: int | str = "latest") -> UseTable:
     return UseTable.from_grid(grid, meta)
 
 
+def parse_import_matrix(path: Path, year: int | str = "latest") -> ImportMatrix:
+    """Read the import matrix for `year` ("latest" = the newest year sheet)."""
+    grid, meta = _read_year_sheet(Path(path), year)
+    return ImportMatrix.from_grid(grid, meta)
+
+
+def load_import_matrix(
+    level: str = "detail",
+    year: int | str = "latest",
+    data_dir: Path = RAW_DIR,
+    force: bool = False,
+) -> ImportMatrix:
+    """Download (cached, into `data_dir / "bea"`) and parse BEA's detail import matrix.
+
+    It is before redefinitions, so it goes with `load_bea_tables(..., redefinitions="before")`.
+    """
+    if level != "detail":
+        raise NotImplementedError("summary level arrives in Phase 2")
+    path = download.fetch(bea_detail_url("import_matrix", "before"), Path(data_dir) / "bea", force=force)
+    imports = parse_import_matrix(path, year)
+    imports.meta["level"] = level
+    imports.meta["redefinitions"] = "before"
+    return imports
+
+
 def load_bea_tables(
     level: str = "detail",
     year: int | str = "latest",
-    redefinitions: str = "after",
+    redefinitions: str = "before",
     data_dir: Path = RAW_DIR,
     force: bool = False,
 ) -> tuple[MakeTable, UseTable]:
