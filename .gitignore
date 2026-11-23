@@ -1,6 +1,8 @@
 # Downloaded BEA/EIA source files and generated tables are reproducible; keep them out of git
 data/raw/*
 data/output/*
+script/data/
+script/output/
 !data/raw/.gitkeep
 !data/output/.gitkeep
 
