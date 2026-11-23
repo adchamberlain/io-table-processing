@@ -43,13 +43,13 @@ def test_fetch_leaves_no_partial_file_on_error(tmp_path, monkeypatch):
         download.fetch("https://example.test/x.xlsx", tmp_path)
     assert not (tmp_path / "x.xlsx").exists() and not list(tmp_path.glob("*.part"))
 
-def test_manifest_has_all_phase1_files():
-    assert sources.bea_detail_url("make", "after").endswith("IOMake_After_Redefinitions_2017_Detail.xlsx")
-    assert sources.bea_detail_url("use", "before").endswith("IOUse_Before_Redefinitions_PRO_2017_Detail.xlsx")
-    assert sources.bea_detail_url("pce_bridge", "any").endswith("PCEBridge_2017_DET.xlsx")
-    assert sources.bea_detail_url("ixi_tr", "any").endswith("IxI_TR_2017_PRO_DET.xlsx")
+def test_source_list_has_the_bea_files():
+    assert sources.bea_detail_url("make").endswith("IOMake_Before_Redefinitions_2017_Detail.xlsx")
+    assert sources.bea_detail_url("use").endswith("IOUse_Before_Redefinitions_PRO_2017_Detail.xlsx")
+    assert sources.bea_detail_url("import_matrix").endswith("ImportMatrices_Before_Redefinitions_DET_2017.xlsx")
+    assert sources.bea_detail_url("pce_bridge").endswith("PCEBridge_2017_DET.xlsx")
     with pytest.raises(KeyError):
-        sources.bea_detail_url("make", "sideways")
+        sources.bea_detail_url("sideways")
 
 def test_fetch_http_error_leaves_nothing_behind(tmp_path, monkeypatch):
     monkeypatch.setattr(download.requests, "get", lambda url, **kw: FakeResponse([b"nope"], status=404))

@@ -4,10 +4,11 @@ A model that turns the Bureau of Economic Analysis (BEA) make and use tables
 into a square industry-by-industry input-output table, and uses that table to
 trace a cost increase through the economy to the prices consumers pay.
 
-You describe a cost shock: a tax on an industry or a commodity, a tariff on an
-imported good, a rise in the price of what one industry sells to another, a rise
-in a component of value added, or a given rise in one industry's price. The
-model answers two questions: how much does every price in the economy change,
+You describe a change in costs: new cost on an industry or a commodity, a rise
+in an import price, a rise in a component of value added, or a given rise in one
+industry's price. It may come from policy (a tax, a tariff) or from the economy
+itself (a world price, wages); the model treats them alike. It answers two
+questions: how much does every price in the economy change,
 and who pays, by consumer spending category and by component of final demand.
 
 Everything runs from BEA's published files. No credentials, and every number
@@ -48,27 +49,27 @@ results are written as CSV files to `script/output/`.
 | 2 | Commodities with no industry behind them |
 | 3 | Market shares |
 | 4 | The input-output table: Z, F, y, A, B, v |
-| 5 | The shock |
+| 5 | The cost change |
 | 6 | The price model |
 | 7 | Who pays, by final use |
 | 8 | Consumer prices |
 | 9 | Results |
 | 10 | Appendix: BEA's published total requirements |
 
-A shock is set directly on the model's inputs in cell 5:
+A cost change is set directly on the model's inputs in cell 5:
 
 ```python
-tariff["331110"] = 0.25                                 # 25% tariff on imported iron and steel
-tariff[:] = 0.10                                        # 10% tariff on all imports
-tau["211000"] = 50_000 / y["211000"]                    # $50 billion of cost on oil and gas extraction
-tau += 0.05 * q["324110"] * shares["324110"] / y        # 5% excise on refined petroleum
-tau += 0.01 * V.loc["V00100"] / y                       # compensation up 1% everywhere
+import_price["331110"] = 0.25                           # 25% tariff on imported iron and steel
+import_price[:] = 0.10                                  # all import prices up 10%
+c["211000"] = 50_000 / y["211000"]                      # $50 billion of cost on oil and gas extraction
+c += 0.05 * q["324110"] * shares["324110"] / y          # 5% excise on refined petroleum
+c += 0.01 * V.loc["V00100"] / y                         # compensation up 1% everywhere
 fixed["211000"] = 0.20                                  # the price of oil and gas up exactly 20%
 ```
 
-`tau` is new cost per dollar of an industry's output, `tariff` the rise in the
-price of an imported commodity, and `fixed` a given price change for an
-industry. Shocks add.
+`c` is new cost per dollar of an industry's output, `import_price` the rise in
+the price of an imported commodity, and `fixed` a given price change for an
+industry. They add.
 
 ## The module
 
@@ -80,11 +81,11 @@ pip install -e ".[dev]"
 
 ```python
 from iotables import (PriceModel, build_square_table, load_bea_tables, load_import_matrix,
-                      load_pce_bridge, shocks)
+                      load_pce_bridge, costs)
 
 make, use = load_bea_tables("detail", 2017)             # cached download and parse
 imports = load_import_matrix("detail", 2017)            # BEA's import matrix
-sq = build_square_table(make, use, imports=imports)
+sq = build_square_table(make, use, imports)
 sq.Z                                                    # 402 x 402 domestic intermediate flows, a DataFrame
 sq.imported_inputs                                      # imported commodities x industries
 sq.check_identities()                                   # raises ValueError if an identity fails
@@ -92,18 +93,17 @@ sq.to_csv("output/table")                               # the table's parts as C
 
 model = PriceModel(sq, pce_bridge=load_pce_bridge("detail", 2017))
 result = model.run([
-    shocks.ImportTariff("331110", rate=0.25),                   # 25 percent tariff on imported steel
-    shocks.IndustryTax("211000", dollars=50_000),               # $50 billion of cost on oil and gas extraction
-    shocks.IndustryPrice("212100", 0.10),                       # the price of coal rises exactly 10 percent
-    shocks.CommodityTax("324110", rate=0.05),                   # 5 percent of refined petroleum output
-    shocks.FlowTax(seller="221100", buyer="331110", rate=0.10), # electricity bought by steel mills
-    shocks.ValueAddedTax("V00100", rate=0.01),                  # 1 percent rise in compensation, all industries
+    costs.ImportPrice("331110", rate=0.25),                    # 25 percent tariff on imported steel
+    costs.IndustryCost("211000", dollars=50_000),              # $50 billion of cost on oil and gas extraction
+    costs.IndustryPrice("212100", 0.10),                       # the price of coal rises exactly 10 percent
+    costs.CommodityCost("324110", rate=0.05),                  # 5 percent of refined petroleum output
+    costs.ValueAddedCost("V00100", rate=0.01),                 # 1 percent rise in compensation, all industries
 ])
 result.summary
 result.pce_prices.sort_values("price_change", ascending=False).head()
 result.to_csv("output/results")                         # the result frames as CSV files
 
-carbon = model.run(shocks.carbon_price(dollars_per_ton_co2=50, emissions_year=2024, sq=sq))
+carbon = model.run(costs.carbon_price(50, 2024, sq))   # $50 per ton of CO2 on 2024 emissions
 ```
 
 `sq` is a `SquareIOTable` with the frames `Z` (intermediate flows, seller rows
@@ -112,14 +112,9 @@ and buyer columns), `F` (final demand), `V` (value added) and the Series `y`
 `commodity_prices`, `pce_prices`, `burden_by_final_demand` and `summary`.
 Dollars are millions; rates and price changes are fractions.
 
-The module's defaults are the script's method. It adds a carbon-price example
-(`shocks.carbon_price`, from EIA's CO2 emissions by fuel), a shock on the sales
-of one industry to another (`shocks.FlowTax`), and a few variants the script
-leaves out: `build_square_table(make, use)` without `imports=` combines
-imports with domestic purchases; `scrap="redistribute"` and `scrap="keep"` are
-other treatments of scrap; `load_bea_tables(..., redefinitions="after")` reads
-BEA's after-redefinitions tables; and `PriceModel(..., formulation="wp6")`
-reproduces the 2009 working paper.
+The module holds the script's method and nothing else, plus one example the
+script leaves out: `costs.carbon_price`, a price per ton of CO2 from EIA's
+emissions by fuel.
 
 The runtime dependencies are pandas, numpy, openpyxl and requests. `pytest` runs
 the test suite; `pytest -m "not network"` skips the tests that need the
@@ -129,7 +124,7 @@ downloaded files.
 
 Results below are from 2026-11-22 and are the same from the script and the module.
 
-**A 25 percent tariff on imported iron and steel** (the script's default). The
+**A 25 percent tariff on imported iron and steel** (the script's example). The
 tariff collects $8.4 billion. The largest price increases are in the industries
 that buy the most imported steel per dollar of output: steel products made from
 purchased steel (3.6 percent), motor vehicle metal stamping (2.2 percent),
@@ -137,10 +132,10 @@ fabricated pipe (2.1 percent). Consumers bear $2.1 billion, 25 percent of the
 total; most of the rest falls on business investment in equipment and
 structures and on exports.
 
-**A $50 per ton carbon price on 2024 emissions** (`shocks.carbon_price` in the
+**A $50 per ton carbon price on 2024 emissions** (`costs.carbon_price` in the
 module: EIA's emissions by fuel times the price, placed on coal mining and on
 oil and gas extraction, at the same rate on domestic output and on imports).
-The cost is $239.1 billion. Personal consumption bears $115.4 billion
+The total cost is $239.1 billion. Personal consumption bears $115.4 billion
 (48 percent), exports $63.5 billion, private investment $31.6 billion and
 government $31.2 billion. The largest consumer price increases:
 
@@ -168,15 +163,18 @@ consumption bears 54 percent of it.
   stands; the table is not inflated.
 - A price change of 0.05 is 5 percent. The burden on a spending category is its
   base spending times its price change.
-- The burdens add up to the shock: the total price increase on final demand,
+- The model says who pays, not who receives. A tax or tariff goes to the
+  government; a rise in a world price or in wages goes to foreign suppliers or
+  to workers.
+- The burdens add up to the total cost: the price increase on final demand,
   on domestic output and on final users' own imports, equals the dollars of the
-  shock.
+  cost change.
 - The model passes costs forward in full and holds quantities fixed, so the
   results are a short-run upper bound. In particular, domestic producers do not
-  raise their prices to match a tariff on competing imports. Add a price shock
-  on the domestic industry to assume that they do.
-- Exports bear part of a domestic cost shock because nothing is rebated at the
-  border.
+  raise their prices to match a tariff on competing imports. Fix the domestic
+  industry's price to assume that they do.
+- Exports bear part of a domestic cost increase because nothing is rebated at
+  the border.
 - Consumer burdens are computed in purchasers' prices from BEA's PCE bridge, so
   they differ slightly from the PCE column of final demand, which is in
   producers' prices. Each commodity is given one imported share in consumer
@@ -216,11 +214,10 @@ The price model is the Leontief cost-push model on that table, with base-year
 prices equal to 1:
 
 ```
-A     = Z diag(y)^-1                        domestic input from industry i per dollar of industry j's output
-v     = value added / y                     value added per dollar of output
-A_hat = A * (1 + T)                         T holds price rises on particular sales, if any
-p     = (I - A_hat')^-1 (v + tau + B' p_m)  tau: new cost per dollar of each industry's output
-                                            p_m: import prices, 1 plus any tariff
+A = Z diag(y)^-1                   domestic input from industry i per dollar of industry j's output
+v = value added / y                value added per dollar of output
+p = (I - A')^-1 (v + c + B' p_m)   c: new cost per dollar of each industry's output
+                                   p_m: import prices, 1 plus any rise
 ```
 
 `p - 1` is each industry's price change. A fixed price change for an industry
@@ -242,10 +239,6 @@ customers. The import matrix is published before redefinitions, so the model
 uses BEA's before-redefinitions tables. Noncomparable imports are kept as an
 imported commodity.
 
-Without the split, imports are counted as domestic purchases: a cost on a
-domestic industry also raises the price of the imported share of its commodity,
-which overstates price effects for heavily imported goods.
-
 In BEA's data a dozen cells record more imports than purchases, nearly all for
 biological products (325414). They are used as published, which leaves small
 negative domestic purchases in those cells ($5.0 billion of $13.4 trillion).
@@ -265,16 +258,13 @@ input.
 ## Validation
 
 The test suite checks the accounting identities of every table it builds, and
-that the burdens of every run sum to the shock. It reproduces four published
-results: BEA's own three-industry handbook example, the 2002 Chamberlain
-Economics summary and detailed tables, BEA's published 2017
-industry-by-industry requirements table (to 7.0e-4; the script's last cell
-does the same), and the price impacts of Tax Foundation Working Paper No. 6
-under `formulation="wp6"`. The import split, tariffs and fixed prices are
-checked against a three-industry economy worked by hand, and a fixed price
-against the textbook solution with that industry's equation removed. The script
-and the module are run on the same shocks and must give the same tables, prices
-and result files.
+that the burdens of every run sum to the total cost. The table is checked
+against BEA's own three-industry handbook example, and the script's last cell
+rebuilds BEA's published 2017 industry-by-industry requirements table to within
+7.0e-4. Import prices and fixed prices are checked against a three-industry
+economy worked by hand, and a fixed price against the textbook solution with
+that industry's equation removed. The script and the module are run on the same
+cost changes and must give the same tables, prices and result files.
 
 ## Data sources
 
@@ -333,8 +323,8 @@ src/iotables/     the same method as an importable module
   download.py     cached downloads
   parse.py        BEA workbooks -> MakeTable, UseTable, ImportMatrix
   square.py       make, use and imports -> SquareIOTable (Z, F, V, y)
-  validate.py     identity checks; BEA's total requirements
-  shocks.py       shock types and the carbon example
+  validate.py     identity checks
+  costs.py        cost changes and the carbon example
   bridge.py       BEA's PCE bridge
   leontief.py     PriceModel -> PriceResult
 tests/            pytest suite and fixtures

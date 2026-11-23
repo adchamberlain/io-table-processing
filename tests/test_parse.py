@@ -134,7 +134,7 @@ def test_parse_use_rejects_year_without_sheet(tmp_path):
         parse.parse_use(p, 2019)
 
 def test_load_bea_tables_rejects_summary_level():
-    with pytest.raises(NotImplementedError, match="summary level arrives in Phase 2"):
+    with pytest.raises(NotImplementedError, match="only the detail level is available"):
         parse.load_bea_tables("summary")
 
 def test_load_bea_tables_downloads_into_bea_dir_and_records_meta(tmp_path, monkeypatch):
@@ -154,11 +154,10 @@ def test_load_bea_tables_downloads_into_bea_dir_and_records_meta(tmp_path, monke
         path.with_name(path.name + ".provenance.json").write_text(json.dumps({"url": url, "sha256": "abc", "bytes": 1, "downloaded_at": "now"}))
         return path
     monkeypatch.setattr(download, "fetch", fake_fetch)
-    make, use = parse.load_bea_tables("detail", "latest", "before", data_dir=tmp_path, force=True)
-    assert [c[0] for c in calls] == [sources.bea_detail_url("make", "before"), sources.bea_detail_url("use", "before")]
+    make, use = parse.load_bea_tables("detail", "latest", data_dir=tmp_path, force=True)
+    assert [c[0] for c in calls] == [sources.bea_detail_url("make"), sources.bea_detail_url("use")]
     assert all(c[1] == tmp_path / "bea" and c[2] == {"force": True} for c in calls)
-    assert make.meta["redefinitions"] == use.meta["redefinitions"] == "before"
-    assert make.meta["provenance"]["url"] == sources.bea_detail_url("make", "before") and use.meta["provenance"]["sha256"] == "abc"
+    assert make.meta["provenance"]["url"] == sources.bea_detail_url("make") and use.meta["provenance"]["sha256"] == "abc"
     assert make.meta["year"] == use.meta["year"] == 2017 and make.industries == use.industries == ["A"]
     assert make.meta["level"] == use.meta["level"] == "detail"
 
@@ -182,12 +181,12 @@ def test_load_bea_tables_rejects_make_and_use_of_different_years(tmp_path, monke
 
 @pytest.mark.network
 def test_load_bea_tables_detail_2017_shapes():
-    make, use = parse.load_bea_tables("detail", 2017, "after")
+    make, use = parse.load_bea_tables("detail", 2017)
     assert make.values.shape == (402, 402) and use.intermediate.shape == (402, 402)
     assert make.commodities == use.commodities
     assert set(make.commodities) - set(make.industries) == {"S00300", "S00401", "S00402", "S00900"}
     assert use.final_demand.shape[1] == 20 and list(use.final_demand.columns)[:2] == ["F01000", "F02E00"]
     assert make.industries == use.industries
     assert (use.industry_output - make.industry_output).abs().max() <= 1.0
-    assert use.meta["redefinitions"] == "after" and "sha256" in use.meta["provenance"]
+    assert "sha256" in use.meta["provenance"]
     assert make.meta["level"] == use.meta["level"] == "detail" and make.meta["year"] == use.meta["year"] == 2017

@@ -13,11 +13,11 @@ import pandas as pd
 import pytest
 
 from iotables import (PriceModel, build_square_table, load_bea_tables, load_import_matrix, load_pce_bridge,
-                      shocks)
+                      costs)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "script" / "io_model.py"
-SHOCK_CELL = 5
+CHANGE_CELL = 5
 
 
 def script_cells() -> dict[int, str]:
@@ -32,11 +32,11 @@ def script_cells() -> dict[int, str]:
     return cells
 
 
-def run_script(shock=None, cells=range(1, 9), inject=None, output=None) -> dict:
+def run_script(change=None, cells=range(1, 9), inject=None, output=None) -> dict:
     """Run the setup and the listed cells; return the script's variables.
 
-    `shock(ns)` replaces the script's example shock: it is called after the shock
-    cell with tau, tariff and fixed reset to nothing. `inject` supplies variables
+    `change(ns)` replaces the script's example: it is called after the cost-change
+    cell with c, import_price and fixed reset to nothing. `inject` supplies variables
     in place of the data cell.
     """
     source = script_cells()
@@ -48,11 +48,11 @@ def run_script(shock=None, cells=range(1, 9), inject=None, output=None) -> dict:
     ns.update(inject or {})
     for number in sorted(cells):
         exec(compile(source[number], str(SCRIPT), "exec"), ns)
-        if number == SHOCK_CELL and shock is not None:
-            ns["tau"] = pd.Series(0.0, index=ns["industries"])
-            ns["tariff"] = pd.Series(0.0, index=ns["U_m"].index)
+        if number == CHANGE_CELL and change is not None:
+            ns["c"] = pd.Series(0.0, index=ns["industries"])
+            ns["import_price"] = pd.Series(0.0, index=ns["U_m"].index)
             ns["fixed"] = {}
-            shock(ns)
+            change(ns)
     return ns
 
 
@@ -68,7 +68,7 @@ def test_script_is_self_contained():
 
 @pytest.fixture(scope="module")
 def sq():
-    return build_square_table(*load_bea_tables("detail", 2017), imports=load_import_matrix("detail", 2017))
+    return build_square_table(*load_bea_tables("detail", 2017), load_import_matrix("detail", 2017))
 
 
 @pytest.fixture(scope="module")
@@ -93,44 +93,44 @@ def test_table_matches_module(sq):
 
 
 def domestic(ns):
-    y, V, q, shares, tau = ns["y"], ns["V"], ns["q"], ns["shares"], ns["tau"]
-    tau["211000"] += 50_000 / y["211000"]
-    tau["212100"] += 0.02
-    tau += 0.05 * q["324110"] * shares["324110"] / y
-    tau += 4_000 * shares["325110"] / y
-    tau += 0.01 * V.loc["V00100"] / y
+    y, V, q, shares, c = ns["y"], ns["V"], ns["q"], ns["shares"], ns["c"]
+    c["211000"] += 50_000 / y["211000"]
+    c["212100"] += 0.02
+    c += 0.05 * q["324110"] * shares["324110"] / y
+    c += 4_000 * shares["325110"] / y
+    c += 0.01 * V.loc["V00100"] / y
     some = ["484000", "481000"]
-    tau[some] += 0.10 * V.loc["V00200", some] / y[some]
+    c[some] += 0.10 * V.loc["V00200", some] / y[some]
 
 
 def steel(ns):
-    ns["tariff"]["331110"] = 0.25
+    ns["import_price"]["331110"] = 0.25
 
 
-def tariffs_and_fixed_prices(ns):
-    ns["tariff"][:] = 0.10
-    ns["tariff"]["336111"] += 10_000 / ns["total_imports"]["336111"]
-    ns["tau"]["211000"] += 10_000 / ns["y"]["211000"]
+def import_and_fixed_prices(ns):
+    ns["import_price"][:] = 0.10
+    ns["import_price"]["336111"] += 10_000 / ns["total_imports"]["336111"]
+    ns["c"]["211000"] += 10_000 / ns["y"]["211000"]
     ns["fixed"].update({"211000": 0.20, "331110": 0.05})
 
 
-SHOCKS = {
+CHANGES = {
     "domestic": (domestic, [
-        shocks.IndustryTax("211000", dollars=50_000), shocks.IndustryTax("212100", rate=0.02),
-        shocks.CommodityTax("324110", rate=0.05), shocks.CommodityTax("325110", dollars=4_000),
-        shocks.ValueAddedTax("V00100", rate=0.01),
-        shocks.ValueAddedTax("V00200", rate=0.10, industries=("484000", "481000"))]),
-    "steel tariff": (steel, [shocks.ImportTariff("331110", rate=0.25)]),
-    "tariffs and fixed prices": (tariffs_and_fixed_prices, [
-        shocks.ImportTariff("all", rate=0.10), shocks.ImportTariff("336111", dollars=10_000),
-        shocks.IndustryTax("211000", dollars=10_000),
-        shocks.IndustryPrice("211000", 0.20), shocks.IndustryPrice("331110", 0.05)]),
+        costs.IndustryCost("211000", dollars=50_000), costs.IndustryCost("212100", rate=0.02),
+        costs.CommodityCost("324110", rate=0.05), costs.CommodityCost("325110", dollars=4_000),
+        costs.ValueAddedCost("V00100", rate=0.01),
+        costs.ValueAddedCost("V00200", rate=0.10, industries=("484000", "481000"))]),
+    "steel": (steel, [costs.ImportPrice("331110", rate=0.25)]),
+    "import and fixed prices": (import_and_fixed_prices, [
+        costs.ImportPrice("all", rate=0.10), costs.ImportPrice("336111", dollars=10_000),
+        costs.IndustryCost("211000", dollars=10_000),
+        costs.IndustryPrice("211000", 0.20), costs.IndustryPrice("331110", 0.05)]),
 }
 
 
 def assert_results_match(ns, result):
     np.testing.assert_allclose(ns["dp"].to_numpy(), result.industry_prices["price_change"].to_numpy(), atol=1e-10)
-    assert ns["shock"] == pytest.approx(result.summary["total_tax"], rel=1e-10)
+    assert ns["total_cost"] == pytest.approx(result.summary["total_cost"], rel=1e-10)
     fd = result.burden_by_final_demand
     np.testing.assert_allclose(ns["burden"].to_numpy(), fd["burden"].to_numpy(), atol=1e-6)
     np.testing.assert_allclose(ns["spending"].to_numpy(), fd["base_spending"].to_numpy(), atol=1e-6)
@@ -147,22 +147,22 @@ def assert_results_match(ns, result):
 
 
 @pytest.mark.network
-@pytest.mark.parametrize("name", list(SHOCKS))
+@pytest.mark.parametrize("name", list(CHANGES))
 def test_results_match_module(model, name):
-    in_script, in_module = SHOCKS[name]
+    in_script, in_module = CHANGES[name]
     assert_results_match(run_script(in_script), model.run(in_module))
 
 
 @pytest.mark.network
 def test_carbon_price_matches_module(sq, model):
-    carbon = shocks.carbon_price(dollars_per_ton_co2=50, emissions_year=2024, sq=sq)
+    carbon = costs.carbon_price(50, 2024, sq)
 
     def in_script(ns):
         for s in carbon:
-            if isinstance(s, shocks.IndustryTax):
-                ns["tau"][s.code] += s.dollars / ns["y"][s.code]
+            if isinstance(s, costs.IndustryCost):
+                ns["c"][s.code] += s.dollars / ns["y"][s.code]
             else:
-                ns["tariff"][s.code] += s.dollars / ns["total_imports"][s.code]
+                ns["import_price"][s.code] += s.dollars / ns["total_imports"][s.code]
 
     ns = run_script(in_script)
     assert_results_match(ns, model.run(carbon))
@@ -173,7 +173,7 @@ def test_carbon_price_matches_module(sq, model):
 @pytest.mark.network
 def test_script_writes_the_modules_result_files(model, tmp_path):
     run_script(cells=range(1, 10), output=tmp_path / "script")                  # the script's example: the steel tariff
-    model.run([shocks.ImportTariff("331110", rate=0.25)]).to_csv(tmp_path / "module")
+    model.run([costs.ImportPrice("331110", rate=0.25)]).to_csv(tmp_path / "module")
     assert not [p for p in (tmp_path / "script").iterdir() if p.suffix != ".csv"]
     for name, key in (("industry_prices", "code"), ("commodity_prices", "code"),
                       ("pce_prices", "nipa_line"), ("burden_by_final_demand", "code")):
@@ -203,19 +203,19 @@ def test_appendix_matches_beas_requirements():
 
 
 @pytest.mark.network
-def test_tariff_revenue_and_reach():
+def test_import_price_cost_and_reach():
     ns = run_script(steel)
-    assert ns["shock"] == pytest.approx(0.25 * ns["total_imports"]["331110"])
+    assert ns["total_cost"] == pytest.approx(0.25 * ns["total_imports"]["331110"])
     dp = ns["dp"]
     assert (dp > -1e-12).all() and dp.idxmax() == "331200"
     assert (dp >= 0.25 * ns["B"].loc["331110"] - 1e-12).all()                   # at least the direct cost
-    assert 0 < ns["pce"]["burden"].sum() < ns["shock"]
+    assert 0 < ns["pce"]["burden"].sum() < ns["total_cost"]
 
 
 @pytest.mark.network
 def test_consumer_price_blends_domestic_and_imported():
     def autos(ns):
-        ns["tariff"]["336111"] = 0.10
+        ns["import_price"]["336111"] = 0.10
 
     ns = run_script(autos)
     m = ns["import_share"]["336111"]
@@ -228,8 +228,8 @@ def test_consumer_price_blends_domestic_and_imported():
 def test_fixed_price_matches_the_textbook_solution():
     def oil_and_steel(ns):
         ns["fixed"].update({"211000": 0.20, "331110": 0.05})
-        ns["tau"]["211000"] = 10_000 / ns["y"]["211000"]
-        ns["tariff"]["324110"] = 0.10
+        ns["c"]["211000"] = 10_000 / ns["y"]["211000"]
+        ns["import_price"]["324110"] = 0.10
 
     ns = run_script(oil_and_steel)
     dp, A, B, v = ns["dp"], ns["A"], ns["B"], ns["v"]
@@ -237,7 +237,7 @@ def test_fixed_price_matches_the_textbook_solution():
     # Drop the fixed industries' equations and solve the rest with their prices given.
     held = ["211000", "331110"]
     free = [c for c in ns["industries"] if c not in held]
-    rhs = v[free] + A.loc[held, free].T @ (1 + dp[held]) + B[free].T @ (1 + ns["tariff"])
+    rhs = v[free] + A.loc[held, free].T @ (1 + dp[held]) + B[free].T @ (1 + ns["import_price"])
     p_free = np.linalg.solve(np.eye(len(free)) - A.loc[free, free].to_numpy().T, rhs.to_numpy())
     np.testing.assert_allclose(dp[free].to_numpy(), p_free - 1, atol=1e-10)
 
@@ -270,15 +270,15 @@ def toy_economy() -> dict:
     }
 
 
-def run_toy(shock):
-    return run_script(shock, cells=range(2, 8), inject=toy_economy())
+def run_toy(change):
+    return run_script(change, cells=range(2, 8), inject=toy_economy())
 
 
 def test_toy_tariff():
-    ns = run_toy(lambda ns: ns["tariff"].__setitem__("C", 0.25))
+    ns = run_toy(lambda ns: ns["import_price"].__setitem__("C", 0.25))
     # A's costs rise by 0.20 x 25%; B's by 0.50 x A's rise; C buys nothing.
     np.testing.assert_allclose(ns["dp"].to_numpy(), [0.05, 0.025, 0.0], atol=1e-15)
-    assert ns["shock"] == pytest.approx(5.0)                               # 25% of 20 of imports
+    assert ns["total_cost"] == pytest.approx(5.0)                               # 25% of 20 of imports
     assert ns["burden"]["F01000"] == pytest.approx(5.0)                    # 0.05 x 50 + 0.025 x 100
     assert ns["V"].loc["V00300"].to_list() == [30.0, 20.0, 40.0]
 
@@ -286,10 +286,10 @@ def test_toy_tariff():
 def test_toy_fixed_price():
     ns = run_toy(lambda ns: ns["fixed"].update(A=0.10))
     np.testing.assert_allclose(ns["dp"].to_numpy(), [0.10, 0.05, 0.0], atol=1e-15)
-    assert ns["shock"] == pytest.approx(10.0)                              # 10% of A's output of 100
+    assert ns["total_cost"] == pytest.approx(10.0)                              # 10% of A's output of 100
 
 
 def test_toy_domestic_cost_does_not_move_import_prices():
-    ns = run_toy(lambda ns: ns["tau"].__setitem__("C", 0.10))
+    ns = run_toy(lambda ns: ns["c"].__setitem__("C", 0.10))
     # C's price rises 10%, but A buys its C from abroad, so A and B are untouched.
     np.testing.assert_allclose(ns["dp"].to_numpy(), [0.0, 0.0, 0.10], atol=1e-15)

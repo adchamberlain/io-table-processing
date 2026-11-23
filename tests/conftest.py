@@ -140,64 +140,7 @@ def add_make_column(make, code, values):
                                industry_output=industry_output, commodity_output=commodity_output)
 
 
-def grid_from_csv(values_path: Path, labels_path: Path | None) -> parse.BeaGrid:
-    """A BeaGrid from a fixture CSV (codes as index and headers, first header "code"; ".gz" = gzip;
-    ValueError for a blank cell).
-
-    `labels_path` is a CSV with columns code,description listing the row codes in table order,
-    then the column codes in table order (a code on both axes, like industry and commodity 1110,
-    has one entry per axis); ValueError if its codes are not exactly those. None labels every
-    code with itself. Skips the calling test when a fixture file is missing (the 2002 fixtures
-    come from scripts/extract_2002_fixtures.py)."""
-    values_path = Path(values_path)
-    for p in (values_path, labels_path):
-        if p is not None and not Path(p).exists(): pytest.skip(f"fixture {Path(p).name} missing")
-    values = pd.read_csv(values_path, index_col=0, dtype={"code": str}).astype(float)
-    if values.isna().to_numpy().any(): raise ValueError(f"{values_path.name}: blank or non-numeric cells")
-    if labels_path is None:
-        row_labels, col_labels = pd.Series(values.index, index=values.index), pd.Series(values.columns, index=values.columns)
-    else:
-        labels = pd.read_csv(labels_path, dtype=str, keep_default_na=False)
-        if list(labels["code"]) != [*values.index, *values.columns]:
-            raise ValueError(f"{Path(labels_path).name}: codes are not {values_path.name}'s row codes then its column codes")
-        n = len(values.index)
-        row_labels = pd.Series(list(labels["description"][:n]), index=values.index, dtype=object)
-        col_labels = pd.Series(list(labels["description"][n:]), index=values.columns, dtype=object)
-    return parse.BeaGrid(values=values, row_labels=row_labels, col_labels=col_labels, title=values_path.name)
-
-
-FIX_2002 = Path(__file__).parent / "fixtures" / "2002"
 VALUE_ADDED_CODES = ["V00100", "V00200", "V00300"]
-
-def build_2002_summary() -> square.SquareIOTable:
-    """The 2002 summary-level square table (`summary_target.csv`) as a SquareIOTable, for the price-model tests.
-
-    Z, F, V and y are that table's own cells (y its T008 column), so the price model runs on the 2002
-    table as it stands. The target CSV has no descriptions, so the labels, N, market shares and
-    commodity output come from `build_square_table(make, use, scrap="keep", drop=())` on the summary
-    fixtures, whose industry and final-demand codes must be the 2002 table's (ValueError otherwise).
-    Skips the calling test when a fixture file is missing.
-    """
-    target = FIX_2002 / "summary_target.csv"
-    if not target.exists(): pytest.skip(f"fixture {target.name} missing")
-    make = parse.MakeTable.from_grid(grid_from_csv(FIX_2002 / "summary_make.csv", FIX_2002 / "summary_make_labels.csv"))
-    use = parse.UseTable.from_grid(grid_from_csv(FIX_2002 / "summary_use.csv", FIX_2002 / "summary_use_labels.csv"))
-    built = square.build_square_table(make, use, scrap="keep", drop=())
-    legacy = pd.read_csv(target, index_col=0, dtype={"code": str})
-    industries = [c for c in legacy.index if c not in (*VALUE_ADDED_CODES, "T008")]
-    final_demand = [c for c in legacy.columns if c not in (*industries, "T008")]
-    if (sorted(industries) != sorted(built.industries) or sorted(final_demand) != sorted(built.F.columns)
-            or list(legacy.index[len(industries):]) != [*VALUE_ADDED_CODES, "T008"]):
-        raise ValueError(f"{target.name}: codes do not match the summary make and use fixtures'")
-    return square.SquareIOTable(
-        Z=legacy.loc[industries, industries], F=legacy.loc[industries, final_demand],
-        V=legacy.loc[VALUE_ADDED_CODES, industries], y=legacy.loc[industries, "T008"],
-        N=built.N.loc[industries], market_shares=built.market_shares.loc[industries],
-        industry_labels=built.industry_labels.loc[industries],
-        final_demand_labels=built.final_demand_labels.loc[final_demand],
-        commodity_labels=built.commodity_labels,
-        meta={"year": 2002, "level": "summary", "commodity_output": built.meta["commodity_output"]})
-
 
 def write_pce_bridge_workbook(path: Path) -> Path:
     """A tiny PCE bridge in the layout of BEA's PCEBridge_2017_DET.xlsx; returns `path`.
@@ -224,3 +167,14 @@ def write_pce_bridge_workbook(path: Path) -> Path:
     ws.cell(6 + len(rows) + 1, 1, "Note. Detail may not add to total due to rounding.")
     wb.save(path)
     return path
+
+
+def no_imports(use):
+    """An import matrix of zeros for `use`: nothing is imported."""
+    return parse.ImportMatrix(intermediate=use.intermediate * 0.0, final_demand=use.final_demand * 0.0, meta={})
+
+
+@pytest.fixture
+def toy_square(toy_make, toy_use):
+    """The toy economy's square table."""
+    return square.build_square_table(toy_make, toy_use, no_imports(toy_use))

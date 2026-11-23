@@ -209,3 +209,15 @@ above, these hold.
   example and flow shocks are not in the script (the module has them). The
   comparison with BEA's table is the last cell, an appendix. Three helpers
   (download, read a table, read the bridge) sit in the setup cell.
+- The module holds the script's method and nothing else, apart from the carbon
+  example. Removed from it: combined imports (the import matrix is a required
+  input), the `redistribute` and `keep` scrap treatments, after-redefinitions
+  tables, the `wp6` formulation, flow shocks, and the tests and fixtures that
+  reproduced the 2002 tables and the 2009 paper.
+- One neutral vocabulary, "cost", in both. The model does not ask whether a
+  cost comes from policy (a tax, a tariff) or from the economy (a world price,
+  wages). Script: `c` (new cost per dollar of output), `import_price`,
+  `total_cost`, cell 5 "The cost change". Module: `iotables.costs` with
+  `IndustryCost`, `CommodityCost`, `ValueAddedCost`, `ImportPrice`,
+  `IndustryPrice`; the result's summary has `total_cost` and
+  `pce_share_of_cost`.

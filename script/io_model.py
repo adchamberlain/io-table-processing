@@ -2,7 +2,7 @@
 # # An input-output price model of the U.S. economy
 #
 # Builds an industry-by-industry input-output table from BEA's make and use
-# tables, then passes a cost shock through it to the prices consumers pay.
+# tables, then passes a change in costs through it to the prices consumers pay.
 #
 #     M          make table: what each industry produces     industries x commodities
 #     U, D       use table: what industries and final users buy
@@ -74,10 +74,10 @@ use, commodity_name, final_use_name = read_table(f"{BEA}/io-annual/IOUse_Before_
 imports, _, _ = read_table(f"{BEA}/io-annual/ImportMatrices_Before_Redefinitions_DET_2017.xlsx")
 bridge = read_bridge(f"{BEA}/underlying-estimates/PCEBridge_2017_DET.xlsx")
 
-industries = [c for c in make.index if not c.startswith("T0")]              # T0..: BEA's totals
-commodities = [c for c in use.index if not c.startswith(("T0", "V0"))]      # V0..: value added
-final_uses = [c for c in use.columns if c.startswith("F")]
-buyers = [c for c in final_uses if c != "F05000"]                           # F05000: imports
+industries = [k for k in make.index if not k.startswith("T0")]              # T0..: BEA's totals
+commodities = [k for k in use.index if not k.startswith(("T0", "V0"))]      # V0..: value added
+final_uses = [k for k in use.columns if k.startswith("F")]
+buyers = [k for k in final_uses if k != "F05000"]                           # F05000: imports
 
 M = make.loc[industries].reindex(columns=commodities, fill_value=0.0)
 U = use.loc[commodities, industries]
@@ -156,39 +156,39 @@ assert (y - g).abs().max() < 50                                             # BE
 print(f"output {y.sum():,.0f} = domestic inputs {Z.sum().sum():,.0f} + imported inputs {U_m.sum().sum():,.0f}"
       f" + value added {V.sum().sum():,.0f}")
 
-# %% 5. The shock
+# %% 5. The cost change
 #
-#     tau       new cost per dollar of an industry's output
-#     tariff    rise in the price of an imported commodity
-#     fixed     industries whose price change is given
+#     c               new cost per dollar of an industry's output
+#     import_price    rise in the price of an imported commodity
+#     fixed           industries whose price change is given
 
-tau = pd.Series(0.0, index=industries)
-tariff = pd.Series(0.0, index=U_m.index)
+c = pd.Series(0.0, index=industries)
+import_price = pd.Series(0.0, index=U_m.index)
 fixed = {}
 
-tariff["331110"] = 0.25                                     # 25% tariff on imported iron and steel
+import_price["331110"] = 0.25                               # 25% tariff on imported iron and steel
 
-# tariff[:] = 0.10                                          # 10% tariff on all imports
-# tau["211000"] = 50_000 / y["211000"]                      # $50 billion of cost on oil and gas extraction
-# tau += 0.05 * q["324110"] * shares["324110"] / y          # 5% excise on refined petroleum
-# tau += 0.01 * V.loc["V00100"] / y                         # compensation up 1% everywhere
+# import_price[:] = 0.10                                    # all import prices up 10%
+# c["211000"] = 50_000 / y["211000"]                        # $50 billion of cost on oil and gas extraction
+# c += 0.05 * q["324110"] * shares["324110"] / y            # 5% excise on refined petroleum
+# c += 0.01 * V.loc["V00100"] / y                           # compensation up 1% everywhere
 # fixed["211000"] = 0.20                                    # the price of oil and gas up exactly 20%
 
 # %% 6. The price model
 #
 #     p = A' p + B' p_m + v     price = cost per dollar of output; p = 1 in the base year
 #     L = (I - A')^-1
-#     p = L (v + tau + B' p_m)
+#     p = L (v + c + B' p_m)    p_m = 1 + import_price
 
 L = pd.DataFrame(np.linalg.inv(np.eye(len(industries)) - A.T), index=industries, columns=industries)
 assert np.allclose(L @ (v + B.sum()), 1)
 
-p = L @ (v + tau + B.T @ (1 + tariff))
+p = L @ (v + c + B.T @ (1 + import_price))
 
 if fixed:                                                   # the cost on S that moves its prices to target:
-    S = list(fixed)                                         #     L[S, S] tau_S = target - p_S
-    tau[S] += np.linalg.solve(L.loc[S, S], 1 + pd.Series(fixed) - p[S])
-    p = L @ (v + tau + B.T @ (1 + tariff))
+    S = list(fixed)                                         #     L[S, S] c_S = target - p_S
+    c[S] += np.linalg.solve(L.loc[S, S], 1 + pd.Series(fixed) - p[S])
+    p = L @ (v + c + B.T @ (1 + import_price))
 
 dp = p - 1
 
@@ -196,17 +196,17 @@ print(dp.nlargest(10).rename(index=industry_name).map("{:.2%}".format).to_string
 
 # %% 7. Who pays
 #
-#     shock  = tau' y + tariff' imports
-#     burden = dp' F + tariff' D_m          by final use; sums to the shock
+#     total cost = c' y + import_price' imports
+#     burden     = dp' F + import_price' D_m        by final use; sums to the total cost
 
-shock = (tau * y).sum() + (tariff * total_imports).sum()
+total_cost = (c * y).sum() + (import_price * total_imports).sum()
 
 spending = F.sum().add(D_m.sum(), fill_value=0)[final_uses]
-burden = (dp @ F).add(tariff @ D_m, fill_value=0)[final_uses]
-assert np.isclose(burden.sum(), shock)
+burden = (dp @ F).add(import_price @ D_m, fill_value=0)[final_uses]
+assert np.isclose(burden.sum(), total_cost)
 
-print(f"shock {shock:,.0f}")
-print((burden / shock).nlargest(6).rename(index=final_use_name).map("{:.1%}".format).to_string())
+print(f"total cost {total_cost:,.0f}")
+print((burden / total_cost).nlargest(6).rename(index=final_use_name).map("{:.1%}".format).to_string())
 
 # %% 8. Consumer prices
 #
@@ -228,7 +228,7 @@ import_share = (imported / (imported + domestic)).fillna(0.0).clip(0, 1)
 
 code = bridge["commodity"]
 m = code.map(import_share).fillna(0.0)
-bridge["dp"] = (1 - m) * code.map(dp_c).fillna(0.0) + m * code.map(tariff).fillna(0.0)
+bridge["dp"] = (1 - m) * code.map(dp_c).fillna(0.0) + m * code.map(import_price).fillna(0.0)
 bridge["burden"] = (bridge["producers"] * bridge["dp"]
                     + bridge["transport"] * margin["transport"]
                     + bridge["wholesale"] * margin["wholesale"]
@@ -238,21 +238,21 @@ pce = bridge.groupby("line").agg(category=("category", "first"), spending=("purc
 pce["price_change"] = (pce["burden"] / pce["spending"]).where(pce["spending"] != 0, 0.0)
 pce["burden"] = pce["price_change"] * pce["spending"]
 
-print(f"consumers bear {pce['burden'].sum():,.0f}, {pce['burden'].sum() / shock:.1%} of the shock")
+print(f"consumers bear {pce['burden'].sum():,.0f}, {pce['burden'].sum() / total_cost:.1%} of the total")
 print(pce.nlargest(10, "price_change")[["category", "price_change", "burden"]]
       .to_string(index=False, formatters={"price_change": "{:.2%}".format, "burden": "{:,.0f}".format}))
 
 # %% 9. Results
 
-industry_prices = pd.DataFrame({"code": industries, "description": [industry_name[c] for c in industries],
+industry_prices = pd.DataFrame({"code": industries, "description": [industry_name[k] for k in industries],
                                 "price_change": dp.values})
-commodity_prices = pd.DataFrame({"code": tariff.index, "description": [commodity_name[c] for c in tariff.index],
-                                 "price_change": dp_c.reindex(tariff.index, fill_value=0.0).values,
-                                 "import_price_change": tariff.values, "pce_import_share": import_share.values})
+commodity_prices = pd.DataFrame({"code": import_price.index, "description": [commodity_name[k] for k in import_price.index],
+                                 "price_change": dp_c.reindex(import_price.index, fill_value=0.0).values,
+                                 "import_price_change": import_price.values, "pce_import_share": import_share.values})
 pce_prices = pd.DataFrame({"nipa_line": pce.index, "pce_category": pce["category"].values,
                            "price_change": pce["price_change"].values, "base_spending": pce["spending"].values,
                            "burden": pce["burden"].values})
-burden_by_final_demand = pd.DataFrame({"code": final_uses, "description": [final_use_name[c] for c in final_uses],
+burden_by_final_demand = pd.DataFrame({"code": final_uses, "description": [final_use_name[k] for k in final_uses],
                                        "base_spending": spending.values, "burden": burden.values})
 
 OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -272,7 +272,7 @@ make_a, _, _ = read_table(f"{BEA}/io-annual/IOMake_After_Redefinitions_2017_Deta
 use_a, _, _ = read_table(f"{BEA}/io-annual/IOUse_After_Redefinitions_PRO_2017_Detail.xlsx")
 published, _, _ = read_table(f"{BEA}/io-annual/IxI_TR_2017_PRO_DET.xlsx")
 
-kept = [c for c in commodities if c not in ("S00402", "S00300", "S00900")]
+kept = [k for k in commodities if k not in ("S00402", "S00300", "S00900")]
 M_a = make_a.loc[industries].reindex(columns=kept, fill_value=0.0)
 g_a = use_a.loc["T008", industries]
 

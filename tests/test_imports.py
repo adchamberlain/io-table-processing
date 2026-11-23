@@ -1,4 +1,4 @@
-"""The import split in the package: tables built with BEA's import matrix, tariffs and fixed prices.
+"""Imports in the module: the table built with an import matrix, import prices and fixed prices.
 
 The economy is small enough to work by hand. Industries and commodities A, B, C;
 each industry makes only its own commodity. Per 100 of output: A buys 20 of
@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from iotables import PriceModel, build_square_table, parse, shocks
+from iotables import PriceModel, build_square_table, parse, costs
 
 NAMES = ["A", "B", "C"]
 
@@ -42,7 +42,7 @@ def grids():
 @pytest.fixture
 def tables(grids):
     make, use, imports = grids
-    meta = {"year": 2017, "level": "detail", "redefinitions": "before"}
+    meta = {"year": 2017, "level": "detail"}
     return (parse.MakeTable.from_grid(make, meta), parse.UseTable.from_grid(use, meta),
             parse.ImportMatrix.from_grid(imports, meta))
 
@@ -50,7 +50,7 @@ def tables(grids):
 @pytest.fixture
 def split(tables):
     make, use, imports = tables
-    return build_square_table(make, use, imports=imports)
+    return build_square_table(make, use, imports)
 
 
 def price_changes(result):
@@ -60,87 +60,75 @@ def price_changes(result):
 # --- the table ---------------------------------------------------------------------
 
 
-def test_split_table_keeps_output_and_separates_imports(tables, split):
-    make, use, _ = tables
-    combined = build_square_table(make, use)
-    pd.testing.assert_series_equal(split.y, combined.y)
+def test_table_keeps_output_and_separates_imports(split):
     assert split.y.to_list() == [100.0, 100.0, 100.0]
-    assert split.Z.loc["C", "A"] == 0 and combined.Z.loc["C", "A"] == 20          # A's purchase of C is imported
-    assert split.imported_inputs.loc["C", "A"] == 20
-    assert split.F.loc["C"].to_list() == [100.0, 0.0] and combined.F.loc["C"].to_list() == [100.0, -20.0]
-    assert list(split.imported_final.columns) == ["F01000"]                        # without the imports column
-    assert split.V.loc["V00300"].to_list() == [30.0, 20.0, 40.0]                   # imported inputs are a cost
+    assert split.Z.loc["C", "A"] == 0 and split.imported_inputs.loc["C", "A"] == 20   # A's purchase of C is imported
+    assert split.F.loc["C"].to_list() == [100.0, 0.0]                               # nothing left in the imports column
+    assert list(split.imported_final.columns) == ["F01000"]                         # without the imports column
+    assert split.V.loc["V00300"].to_list() == [30.0, 20.0, 40.0]                    # imported inputs are a cost
     assert split.total_imports.to_dict() == {"A": 0.0, "B": 0.0, "C": 20.0}
     assert split.check_identities()["row_minus_col"] == 0
-    assert combined.imported_inputs is None and combined.total_imports.empty
 
 
-def test_import_matrix_imports_column_is_set_from_the_row(tables):
+def test_the_matrix_own_imports_column_is_not_used(tables):
     make, use, imports = tables
     imports.final_demand.loc["C", "F05000"] = -19.0                                # as if rounded
-    sq = build_square_table(make, use, imports=imports)
-    assert sq.y.to_list() == [100.0, 100.0, 100.0]                                 # output is still BEA's
+    assert build_square_table(make, use, imports).y.to_list() == [100.0, 100.0, 100.0]
 
 
 def test_import_matrix_must_cover_the_use_table(tables):
     make, use, imports = tables
     imports.intermediate = imports.intermediate.drop(index="B")
     with pytest.raises(ValueError, match="lacks commodities"):
-        build_square_table(make, use, imports=imports)
+        build_square_table(make, use, imports)
 
 
 # --- tariffs and fixed prices ---------------------------------------------------------
 
 
-def test_tariff_passes_through_imported_inputs(split):
-    result = PriceModel(split).run([shocks.ImportTariff("C", rate=0.25)])
+def test_import_price_passes_through_imported_inputs(split):
+    result = PriceModel(split).run([costs.ImportPrice("C", rate=0.25)])
     # A's costs rise by 0.20 x 25%; B's by 0.50 x A's rise; C buys nothing.
     np.testing.assert_allclose(price_changes(result).to_numpy(), [0.05, 0.025, 0.0], atol=1e-15)
-    assert result.summary["total_tax"] == pytest.approx(5.0)                       # 25% of 20 of imports
+    assert result.summary["total_cost"] == pytest.approx(5.0)                       # 25% of 20 of imports
     assert result.summary["identity_residual"] == pytest.approx(0.0, abs=1e-12)
     assert result.burden_by_final_demand.set_index("code")["burden"]["F01000"] == pytest.approx(5.0)
     prices = result.commodity_prices.set_index("code")
     assert prices.loc["C", "import_price_change"] == 0.25 and prices.loc["C", "price_change"] == 0
 
 
-def test_tariff_in_dollars_and_on_all_imports(split):
+def test_import_price_in_dollars_and_on_all_imports(split):
     model = PriceModel(split)
-    by_rate = price_changes(model.run([shocks.ImportTariff("C", rate=0.25)]))
-    pd.testing.assert_series_equal(price_changes(model.run([shocks.ImportTariff("C", dollars=5.0)])), by_rate)
-    pd.testing.assert_series_equal(price_changes(model.run([shocks.ImportTariff("all", rate=0.25)])), by_rate)
+    by_rate = price_changes(model.run([costs.ImportPrice("C", rate=0.25)]))
+    pd.testing.assert_series_equal(price_changes(model.run([costs.ImportPrice("C", dollars=5.0)])), by_rate)
+    pd.testing.assert_series_equal(price_changes(model.run([costs.ImportPrice("all", rate=0.25)])), by_rate)
 
 
 def test_domestic_cost_does_not_move_import_prices(split):
-    result = PriceModel(split).run([shocks.IndustryTax("C", rate=0.10)])
+    result = PriceModel(split).run([costs.IndustryCost("C", rate=0.10)])
     np.testing.assert_allclose(price_changes(result).to_numpy(), [0.0, 0.0, 0.10], atol=1e-15)
 
 
 def test_industry_price_is_hit_exactly(split):
-    result = PriceModel(split).run([shocks.IndustryPrice("A", 0.10), shocks.IndustryTax("A", dollars=3.0)])
+    result = PriceModel(split).run([costs.IndustryPrice("A", 0.10), costs.IndustryCost("A", dollars=3.0)])
     np.testing.assert_allclose(price_changes(result).to_numpy(), [0.10, 0.05, 0.0], atol=1e-15)
-    assert result.summary["total_tax"] == pytest.approx(10.0)                      # 10% of A's output
+    assert result.summary["total_cost"] == pytest.approx(10.0)                      # 10% of A's output
     assert result.summary["identity_residual"] == pytest.approx(0.0, abs=1e-12)
 
 
 @pytest.mark.parametrize("shock, error, text", [
-    (shocks.ImportTariff("ZZZ", rate=0.1), KeyError, "ZZZ"),
-    (shocks.ImportTariff("A", dollars=5.0), ValueError, "no imports"),
-    (shocks.IndustryPrice("ZZZ", 0.1), KeyError, "ZZZ"),
+    (costs.ImportPrice("ZZZ", rate=0.1), KeyError, "ZZZ"),
+    (costs.ImportPrice("A", dollars=5.0), ValueError, "no imports"),
+    (costs.IndustryPrice("ZZZ", 0.1), KeyError, "ZZZ"),
 ])
-def test_bad_import_and_price_shocks(split, shock, error, text):
+def test_bad_import_and_fixed_prices(split, shock, error, text):
     with pytest.raises(error, match=text):
         PriceModel(split).run([shock])
 
 
-def test_tariff_needs_a_split_table_and_the_output_formulation(tables, split):
-    make, use, _ = tables
-    with pytest.raises(ValueError, match="import matrix"):
-        PriceModel(build_square_table(make, use)).run([shocks.ImportTariff("C", rate=0.25)])
-    for shock in (shocks.ImportTariff("C", rate=0.25), shocks.IndustryPrice("A", 0.1)):
-        with pytest.raises(ValueError, match="wp6"):
-            PriceModel(split, formulation="wp6").run([shock])
+def test_import_price_needs_exactly_one_of_rate_and_dollars():
     with pytest.raises(ValueError, match="exactly one"):
-        shocks.ImportTariff("C")
+        costs.ImportPrice("C")
 
 
 # --- writing a split table and its results ------------------------------------------------
@@ -159,13 +147,13 @@ def test_split_table_layout_and_files(split, tmp_path):
 
 
 def test_result_to_csv(split, tmp_path):
-    result = PriceModel(split).run([shocks.ImportTariff("C", rate=0.25), shocks.IndustryTax("A", dollars=1.0)])
+    result = PriceModel(split).run([costs.ImportPrice("C", rate=0.25), costs.IndustryCost("A", dollars=1.0)])
     paths = result.to_csv(tmp_path / "results")
     assert sorted(p.name for p in (tmp_path / "results").iterdir()) == [
-        "burden_by_final_demand.csv", "commodity_prices.csv", "industry_prices.csv", "shocks.csv", "summary.csv"]
+        "burden_by_final_demand.csv", "changes.csv", "commodity_prices.csv", "industry_prices.csv", "summary.csv"]
     assert "pce_prices" not in paths                                               # no PCE bridge in this run
     pd.testing.assert_frame_equal(pd.read_csv(paths["industry_prices"]), result.industry_prices)
     summary = pd.read_csv(paths["summary"]).set_index("item")["value"]
-    assert float(summary["total_tax"]) == pytest.approx(result.summary["total_tax"])
-    written = pd.read_csv(paths["shocks"])
-    assert list(written["type"]) == ["ImportTariff", "IndustryTax"] and list(written["code"]) == ["C", "A"]
+    assert float(summary["total_cost"]) == pytest.approx(result.summary["total_cost"])
+    written = pd.read_csv(paths["changes"])
+    assert list(written["type"]) == ["ImportPrice", "IndustryCost"] and list(written["code"]) == ["C", "A"]

@@ -351,43 +351,36 @@ def load_import_matrix(
     data_dir: Path = RAW_DIR,
     force: bool = False,
 ) -> ImportMatrix:
-    """Download (cached, into `data_dir / "bea"`) and parse BEA's detail import matrix.
-
-    It is before redefinitions, so it goes with `load_bea_tables(..., redefinitions="before")`.
-    """
+    """Download (cached, into `data_dir / "bea"`) and parse BEA's detail import matrix."""
     if level != "detail":
-        raise NotImplementedError("summary level arrives in Phase 2")
-    path = download.fetch(bea_detail_url("import_matrix", "before"), Path(data_dir) / "bea", force=force)
+        raise NotImplementedError("only the detail level is available")
+    path = download.fetch(bea_detail_url("import_matrix"), Path(data_dir) / "bea", force=force)
     imports = parse_import_matrix(path, year)
     imports.meta["level"] = level
-    imports.meta["redefinitions"] = "before"
     return imports
 
 
 def load_bea_tables(
     level: str = "detail",
     year: int | str = "latest",
-    redefinitions: str = "before",
     data_dir: Path = RAW_DIR,
     force: bool = False,
 ) -> tuple[MakeTable, UseTable]:
-    """Download (cached) and parse the BEA make and use workbooks.
+    """Download (cached) and parse BEA's make and use workbooks, before redefinitions.
 
-    Files land in `data_dir / "bea"`. Each table's `meta` gains `level`,
-    `redefinitions` and `provenance` (the download sidecar: url, sha256,
-    bytes, downloaded_at); `year` is the resolved integer year. Raises
-    ValueError when the make and use years resolve differently (with
-    "latest", when the two workbooks' newest year sheets differ).
+    Files land in `data_dir / "bea"`. Each table's `meta` gains `level` and
+    `provenance` (the download sidecar: url, sha256, bytes, downloaded_at);
+    `year` is the resolved integer year. Raises ValueError when the make and
+    use years resolve differently.
     """
     if level != "detail":
-        raise NotImplementedError("summary level arrives in Phase 2")
+        raise NotImplementedError("only the detail level is available")
     bea_dir = Path(data_dir) / "bea"
     tables = []
     for kind, parser in (("make", parse_make), ("use", parse_use)):
-        path = download.fetch(bea_detail_url(kind, redefinitions), bea_dir, force=force)
+        path = download.fetch(bea_detail_url(kind), bea_dir, force=force)
         table = parser(path, year)
         table.meta["level"] = level
-        table.meta["redefinitions"] = redefinitions
         table.meta["provenance"] = json.loads(
             path.with_name(path.name + ".provenance.json").read_text()
         )

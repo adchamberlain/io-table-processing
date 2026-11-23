@@ -175,8 +175,8 @@ def load_pce_bridge(
     The bridge's `meta` gains `level` and `provenance` (the download sidecar).
     """
     if level != "detail":
-        raise NotImplementedError("summary level arrives in Phase 2")
-    path = download.fetch(bea_detail_url("pce_bridge", "any"), Path(data_dir) / "bea", force=force)
+        raise NotImplementedError("only the detail level is available")
+    path = download.fetch(bea_detail_url("pce_bridge"), Path(data_dir) / "bea", force=force)
     pce_bridge = parse_pce_bridge(path, year)
     pce_bridge.meta["level"] = level
     pce_bridge.meta["provenance"] = json.loads(
